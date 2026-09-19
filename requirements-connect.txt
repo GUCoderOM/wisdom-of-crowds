@@ -1,0 +1,10 @@
+# Path B — Databricks Connect. Install into a SEPARATE virtualenv from Path A.
+# Databricks' own docs state that databricks-connect conflicts with pyspark
+# and the two must not be installed in the same environment:
+# https://docs.databricks.com/aws/en/dev-tools/databricks-connect/python/troubleshooting
+
+# Client library pinned to match DBR 17.3 LTS (Spark 4.0.0)
+databricks-connect==17.3.*
+jupyterlab>=4.2
+ipykernel>=6.29
+pandas>=2.2.0,<3.0.0

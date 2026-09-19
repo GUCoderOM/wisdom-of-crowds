@@ -1,0 +1,40 @@
+[project]
+name = "wisdom-of-crowds"
+version = "0.1.0"
+description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { text = "MIT" }
+authors = [{ name = "Yousuf Abdullatif" }]
+
+dependencies = [
+    # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0)
+    # https://docs.databricks.com/aws/en/release-notes/runtime/
+    "pyspark==4.0.0",
+    "pyarrow>=18.0.0",
+    "pandas>=2.2.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+local = [
+    "jupyterlab>=4.2",
+    "ipykernel>=6.29",
+    "matplotlib>=3.9",       # small optional plot in the summary cell
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-mock>=3.14",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

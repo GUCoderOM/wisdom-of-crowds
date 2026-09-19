@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtualenvs
+.venv-local/
+.venv-connect/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Spark / Databricks
+spark-warehouse/
+metastore_db/
+derby.log
+.databricks/
+
+# Local outputs
+output/
+*.parquet
+*.delta/
+
+# Secrets — anything matching these patterns is git-ignored so credentials
+# never enter version control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS
+.DS_Store
