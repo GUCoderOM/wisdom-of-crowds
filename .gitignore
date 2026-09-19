@@ -35,3 +35,6 @@ output/
 
 # OS
 .DS_Store
+
+# Local working notes — never published
+TODO-non-tech.md
