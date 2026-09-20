@@ -1,0 +1,37 @@
+# Parameters for the NOAA GEFS ensemble-weather ingestion source.
+#
+# GEFS runs the weather model 31 times a cycle — one unperturbed "control"
+# run plus 30 perturbed members. Each (location, variable, forecast_hour)
+# below becomes one silver row whose `guesses` array holds every member's
+# forecast for that hour: a computed crowd rather than a polled one.
+#
+# Row count per cycle = locations x variables x forecast_hours.
+# The defaults below give 3 x 2 x 3 = 18 rows, ~31 guesses each.
+
+# Open-Meteo's ensemble endpoint re-publishes GEFS as plain JSON, which keeps
+# GRIB2 tooling (cfgrib/eccodes) out of the Spark runtime. Free, no API key.
+api_url: "https://ensemble-api.open-meteo.com/v1/ensemble"
+
+# GEFS at 0.25 degrees. Do NOT switch this to a `*_seamless` model — those
+# splice several different NWP models together and would stop being GEFS.
+model: "gfs025"
+
+locations:
+  - {name: London, lat: 51.5,  lon: -0.13}
+  - {name: NYC,    lat: 40.71, lon: -74.0}
+  - {name: Tokyo,  lat: 35.68, lon: 139.69}
+
+# Any hourly variable the ensemble API exposes. Ones absent from the
+# _VAR_META table in noaa.py still work — they just get an auto-derived
+# label and slug.
+variables: ["temperature_2m", "precipitation"]
+
+# Hours ahead of 00Z today. 0.25-degree GEFS runs out to ~10 days.
+forecast_hours: [24, 72, 168]
+
+# The control run is a real (unperturbed) GEFS member, so it votes by
+# default. Set false for the 30 perturbed members only.
+include_control: true
+
+retries:         3
+timeout_seconds: 60

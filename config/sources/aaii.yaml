@@ -1,0 +1,24 @@
+# Parameters for the AAII Investor Sentiment Survey ingestion source.
+#
+# AAII polls its members weekly — results out each Thursday — for the share
+# of individual investors who are bullish, bearish or neutral on the next six
+# months. Each survey week becomes one `poll_categorical` silver row whose
+# three prices are those percentages over 100.
+#
+# The three shares are fetched as three separate CSVs and joined on
+# observation date, so `series` maps the outcome key the source expects to
+# whatever the provider calls that series.
+#
+# HEADS-UP (checked 2026-09-20): the series IDs below return HTTP 404 —
+# FRED does not carry the AAII survey, whose data is AAII's own and
+# licensed. `fred_base_url` and `series` are here so the feed can be
+# repointed at a licensed provider without code changes: any CSV whose
+# first two columns are `<iso-date>,<percent>` parses. Until then the
+# source logs the failure and writes zero rows.
+
+min_date:      "2020-01-01"
+fred_base_url: "https://fred.stlouisfed.org/graph/fredgraph.csv"
+series:
+  bullish: "BULLISH"
+  bearish: "BEARISH"
+  neutral: "NEUTRAL"

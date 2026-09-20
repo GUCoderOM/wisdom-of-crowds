@@ -12,10 +12,20 @@ that ends up in silver/gold rows lives in
 from __future__ import annotations
 
 from wisdom_of_crowds.ingest.base import Source
-from wisdom_of_crowds.ingest.sources import manifold, spf, sweets_jar
+from wisdom_of_crowds.ingest.sources import (
+    aaii,
+    ecb_spf,
+    manifold,
+    noaa,
+    spf,
+    sweets_jar,
+)
 
 SOURCES: dict[str, type[Source]] = {
     sweets_jar.SweetsJarSource.slug: sweets_jar.SweetsJarSource,
     spf.SPFSource.slug:              spf.SPFSource,
     manifold.ManifoldSource.slug:    manifold.ManifoldSource,
+    ecb_spf.ECBSPFSource.slug:       ecb_spf.ECBSPFSource,
+    aaii.AAIISource.slug:            aaii.AAIISource,
+    noaa.NOAASource.slug:            noaa.NOAASource,
 }
