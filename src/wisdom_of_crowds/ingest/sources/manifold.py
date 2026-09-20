@@ -177,6 +177,17 @@ class ManifoldSource(Source):
     def _fetch_bets(self, contract_id: str, limit: int) -> list[dict[str, Any]]:
         return self._get_json("/bets", {"contractId": contract_id, "limit": limit})
 
+    def _fetch_market_full(self, contract_id: str) -> dict[str, Any]:
+        """Hydrate a single market via ``/market/{id}``.
+
+        Manifold's ``/markets`` list endpoint returns "LiteMarket" objects
+        that omit the ``answers`` array for MULTIPLE_CHOICE / FREE_RESPONSE
+        markets — meaning the categorical strategy has no outcomes/prices
+        to aggregate. Fetching the FullMarket for each such contract fills
+        those in.
+        """
+        return self._get_json(f"/market/{contract_id}")
+
     # ------------------------------------------------------------------
     # per-market emission
     # ------------------------------------------------------------------
@@ -251,6 +262,17 @@ class ManifoldSource(Source):
         elif qtype in (_MULTI, _FREE_RESP):
             silver_qtype   = QuestionType.CATEGORICAL
             ans            = market.get("answers") or []
+            if not ans:
+                # LiteMarket from /markets doesn't carry answers — hydrate
+                # via /market/{id} so gold has real outcomes/prices.
+                try:
+                    full = self._fetch_market_full(mid)
+                    ans = full.get("answers") or []
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("manifold_market_hydrate_failed", extra={
+                        "market_id": mid, "err": repr(exc),
+                    })
+                    ans = []
             outcomes       = [str(a.get("text")) for a in ans]
             prices         = [_f(a.get("probability")) or 0.0 for a in ans]
         elif qtype == _PSEUDO_NUM:
