@@ -81,25 +81,29 @@ class PolymarketSource(Source):
 
         api_key = cfg.params.get("dune_api_key") or os.environ.get("DUNE_API_KEY")
         if not api_key:
-            _log.warning("polymarket_no_dune_key_empty_batch")
-            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
+            # Hard failure — without the key we can't ingest, and a silent
+            # empty batch would overwrite the previous cycle's partition
+            # with nothing. Better to fail the run and preserve prior data.
+            raise RuntimeError(
+                "DUNE_API_KEY not set. Put it in the wisdom_of_crowds/dune_api_key "
+                "secret scope or pass in params.dune_api_key.",
+            )
 
         markets = self._list_markets(limit_markets, include_closed, min_trade_count)
         _log.info("polymarket_markets_listed", extra={"n": len(markets)})
         if not markets:
+            # Genuine "nothing to ingest" — market universe is empty.
             return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         condition_ids = [m["conditionId"] for m in markets if m.get("conditionId")]
         cid_to_market = {m["conditionId"]: m for m in markets if m.get("conditionId")}
 
+        # Any Dune failure propagates — the framework aborts the run
+        # before touching the partition, so prior data stays intact.
         rows: list[tuple] = []
-        try:
-            for batch in _batches(condition_ids, _IDS_PER_QUERY):
-                for trade in self._fetch_trades_via_dune(api_key, batch, lookback_days):
-                    self._emit_trade(trade, cid_to_market, cfg, rows)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("polymarket_dune_failed_empty_batch", extra={"err": repr(exc)})
-            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
+        for batch in _batches(condition_ids, _IDS_PER_QUERY):
+            for trade in self._fetch_trades_via_dune(api_key, batch, lookback_days):
+                self._emit_trade(trade, cid_to_market, cfg, rows)
 
         if not rows:
             return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
@@ -183,7 +187,9 @@ class PolymarketSource(Source):
         lookback_days: int | None,
     ) -> Iterable[dict[str, Any]]:
         """Create a Dune query for this batch of condition IDs, execute it,
-        poll to completion, and yield one dict per trade row."""
+        poll to completion, yield trade rows, then archive the query so
+        every run cleans up after itself instead of leaving trash behind
+        in the Dune account."""
         sql = _build_trades_sql(condition_ids, lookback_days)
         _log.info("polymarket_dune_query_create", extra={"n_ids": len(condition_ids)})
         create_resp = self._get_json(
@@ -197,55 +203,68 @@ class PolymarketSource(Source):
                 "is_private":  True,
             }).encode(),
         )
-        query_id = create_resp.get("query_id")
+        query_id = create_resp.get("query_id") if isinstance(create_resp, dict) else None
         if not query_id:
             raise RuntimeError(f"Dune query creation returned no id: {create_resp}")
 
-        exec_resp = self._get_json(
-            _DUNE_BASE, f"/query/{query_id}/execute",
-            headers={"X-DUNE-API-KEY": api_key},
-            method="POST",
-        )
-        execution_id = exec_resp.get("execution_id")
-        if not execution_id:
-            raise RuntimeError(f"Dune execute returned no id: {exec_resp}")
-
-        # Poll to completion.
-        for _ in range(_POLL_ATTEMPTS):
-            time.sleep(_POLL_INTERVAL_S)
-            status = self._get_json(
-                _DUNE_BASE, f"/execution/{execution_id}/status",
+        try:
+            exec_resp = self._get_json(
+                _DUNE_BASE, f"/query/{query_id}/execute",
                 headers={"X-DUNE-API-KEY": api_key},
+                method="POST",
             )
-            state = status.get("state", "")
-            if state == "QUERY_STATE_COMPLETED":
-                break
-            if state == "QUERY_STATE_FAILED":
-                raise RuntimeError(
-                    f"Dune query {query_id} failed: {status.get('error')}",
+            execution_id = exec_resp.get("execution_id") if isinstance(exec_resp, dict) else None
+            if not execution_id:
+                raise RuntimeError(f"Dune execute returned no id: {exec_resp}")
+
+            # Poll to completion.
+            for _ in range(_POLL_ATTEMPTS):
+                time.sleep(_POLL_INTERVAL_S)
+                status = self._get_json(
+                    _DUNE_BASE, f"/execution/{execution_id}/status",
+                    headers={"X-DUNE-API-KEY": api_key},
                 )
-        else:
-            raise TimeoutError(f"Dune query {query_id} did not complete in time")
+                state = status.get("state", "") if isinstance(status, dict) else ""
+                if state == "QUERY_STATE_COMPLETED":
+                    break
+                if state == "QUERY_STATE_FAILED":
+                    raise RuntimeError(
+                        f"Dune query {query_id} failed: {status.get('error')}",
+                    )
+            else:
+                raise TimeoutError(f"Dune query {query_id} did not complete in time")
 
-        # Paginate result rows.
-        next_offset = 0
-        while True:
-            page = self._get_json(
-                _DUNE_BASE, f"/execution/{execution_id}/results",
-                query={"limit": 25000, "offset": next_offset},
-                headers={"X-DUNE-API-KEY": api_key},
-            )
-            result = page.get("result") or {}
-            rows = result.get("rows") or []
-            if not rows:
-                return
-            for r in rows:
-                yield r
-            meta = result.get("metadata") or {}
-            row_count = int(meta.get("row_count") or 0)
-            next_offset += len(rows)
-            if next_offset >= row_count:
-                return
+            # Paginate result rows.
+            next_offset = 0
+            while True:
+                page = self._get_json(
+                    _DUNE_BASE, f"/execution/{execution_id}/results",
+                    query={"limit": 25000, "offset": next_offset},
+                    headers={"X-DUNE-API-KEY": api_key},
+                )
+                result = page.get("result") or {}
+                rows = result.get("rows") or []
+                if not rows:
+                    return
+                for r in rows:
+                    yield r
+                meta = result.get("metadata") or {}
+                row_count = int(meta.get("row_count") or 0)
+                next_offset += len(rows)
+                if next_offset >= row_count:
+                    return
+        finally:
+            # Archive the auto-created query so every run leaves no trace.
+            try:
+                self._get_json(
+                    _DUNE_BASE, f"/query/{query_id}/archive",
+                    headers={"X-DUNE-API-KEY": api_key},
+                    method="POST",
+                )
+            except Exception as exc:  # noqa: BLE001 — cleanup best-effort
+                _log.warning("polymarket_dune_archive_failed", extra={
+                    "query_id": query_id, "err": repr(exc),
+                })
 
     def _emit_trade(
         self,
@@ -289,7 +308,13 @@ class PolymarketSource(Source):
 
 
 def _build_trades_sql(condition_ids: list[str], lookback_days: int | None) -> str:
-    quoted_ids = ",".join(f"'{cid}'" for cid in condition_ids)
+    """Build the trades SELECT for a batch of condition IDs.
+
+    ``polymarket_polygon.market_trades.condition_id`` is ``varbinary`` on
+    Dune, not a string — Trino refuses ``varchar`` literals against a
+    ``varbinary`` column. Wrapping each id in ``from_hex('...')`` (with
+    the ``0x`` prefix stripped) coerces cleanly."""
+    hex_ids = ",".join(f"from_hex('{cid.removeprefix('0x')}')" for cid in condition_ids)
     time_clause = ""
     if lookback_days is not None:
         time_clause = f"\n  AND block_time > NOW() - INTERVAL '{int(lookback_days)}' DAY"
@@ -297,7 +322,7 @@ def _build_trades_sql(condition_ids: list[str], lookback_days: int | None) -> st
         "SELECT condition_id, question, token_outcome, price, amount, shares, "
         "maker, taker, is_taker_side, block_time, unique_key\n"
         "FROM polymarket_polygon.market_trades\n"
-        f"WHERE condition_id IN ({quoted_ids}){time_clause}\n"
+        f"WHERE condition_id IN ({hex_ids}){time_clause}\n"
         "ORDER BY block_time DESC"
     )
 
