@@ -140,16 +140,19 @@ def run_payload(spark: SparkSession, payload: TransformationPayload) -> dict[str
     # that param's value survive. That's how the aggregate transformation
     # gets partition pruning without knowing anything about the underlying
     # storage.
+    required_keys = set(t.input_keys)
+    optional_keys = set(getattr(t, "optional_input_keys", ()))
     input_dfs: dict[str, DataFrame] = {}
     for key, table in payload.inputs.items():
-        if key not in t.input_keys:
+        if key not in required_keys and key not in optional_keys:
             raise KeyError(
                 f"{t.name}: unexpected input key {key!r}. "
-                f"Declared inputs: {list(t.input_keys)}",
+                f"Declared inputs: required={sorted(required_keys)}, "
+                f"optional={sorted(optional_keys)}",
             )
         input_dfs[key] = _apply_partition_filters(_read(spark, table), payload.params)
 
-    missing = set(t.input_keys) - set(input_dfs)
+    missing = required_keys - set(input_dfs)
     if missing:
         raise KeyError(f"{t.name}: missing input tables for keys {sorted(missing)}")
 
