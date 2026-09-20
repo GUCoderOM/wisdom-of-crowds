@@ -74,13 +74,13 @@ def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
     ingested: DataFrame = source.extract(spark, src_cfg)
     guesses: DataFrame = _enrich(ingested, source_id=meta.source_id, cycle_dt=cycle_dt)
 
-    _write(silver, cfg.guesses_output, source_id=meta.source_id, cycle_dt=cycle_dt)
+    _write(guesses, cfg.guesses_output, source_id=meta.source_id, cycle_dt=cycle_dt)
 
-    # Only after silver is committed do we advance the dimension row.
+    # Only after the write succeeds do we advance the dimension row.
     sources_target = cfg.sources_output or _derive_sources_target(cfg.guesses_output)
     ensure_source_row(spark, sources_target, cfg.source_slug, cycle_ts)
 
-    n = silver.count()
+    n = guesses.count()
     _log.info("ingest_complete", extra={
         "source_slug":    cfg.source_slug,
         "source_id":      meta.source_id,

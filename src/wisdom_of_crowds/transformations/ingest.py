@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any, Mapping
+import pathlib
+from typing import Any, Mapping, MutableMapping
 
+import yaml
 from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql import functions as F
 
@@ -85,22 +87,33 @@ class IngestTransformation:
         self,
         spark:  SparkSession,
         inputs: Mapping[str, DataFrame],
-        params: Mapping[str, Any],
+        params: MutableMapping[str, Any],
     ) -> Mapping[str, DataFrame]:
         slug     = self.source_cls.slug
         meta     = get_meta(slug)
         cycle_ts = _resolve_cycle_ts(params)
         cycle_dt = cycle_ts.date()
 
+        # Inject the resolved partition values back into params so the
+        # framework's write-side placeholder fill (which uses
+        # ``replace_where`` templates like
+        # ``source_id = {source_id} AND cycle_dt = date'{cycle_dt}'``) has
+        # values to work with. Params is a mutable dict flowing through
+        # :func:`run_payload`.
+        params["source_id"] = meta.source_id
+        params.setdefault("cycle_dt", cycle_dt.isoformat())
+
+        # Merge the source's on-disk YAML config into what we pass into
+        # SourceConfig.params. The framework payload only carries pipeline
+        # metadata (cycle_dt etc.); per-source knobs (input paths,
+        # limits, bets_output) live in the YAML.
+        source_params: dict[str, Any] = _load_source_yaml(slug)
+        source_params.update(params)  # framework params take precedence
+        # Legacy in-source bets writes are handled by the framework now.
+        source_params.pop("bets_output", None)
+
         src = self.source_cls()
-        cfg = SourceConfig(
-            slug=slug,
-            cycle_ts=cycle_ts,
-            # Legacy sources (Manifold, Polymarket) look at cfg.params for
-            # their own knobs (limits, bets_output). Framework params are
-            # a superset — pass them through.
-            params=dict(params),
-        )
+        cfg = SourceConfig(slug=slug, cycle_ts=cycle_ts, params=source_params)
         guesses_ingest: DataFrame = src.extract(spark, cfg)
 
         # Enrich to the on-disk GUESSES_SCHEMA (adds source_id + cycle_dt).
@@ -136,6 +149,24 @@ register(IngestTransformation(name="ingest_polymarket", source_cls=polymarket.Po
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_source_yaml(slug: str) -> dict[str, Any]:
+    """Load ``config/sources/<slug>.yaml`` from either the repo checkout
+    or the wheel's packaged ``_config/`` sibling. Returns ``{}`` when
+    absent — sources may declare no YAML at all."""
+    here = pathlib.Path(__file__).resolve()
+    candidates = (
+        parent / config_dir / "sources" / f"{slug}.yaml"
+        for parent in [here.parent, *here.parents]
+        for config_dir in ("config", "_config")
+    )
+    path = next((c for c in candidates if c.is_file()), None)
+    if path is None:
+        _log.info("no_source_yaml", extra={"slug": slug})
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
 
 def _resolve_cycle_ts(params: Mapping[str, Any]) -> dt.datetime:
