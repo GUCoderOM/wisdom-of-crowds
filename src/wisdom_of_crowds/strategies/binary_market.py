@@ -1,13 +1,13 @@
 """Strategy for binary prediction-market questions.
 
-Given a market with two outcomes (typically ``["Yes","No"]``) and current
-prices summing to ~1, the crowd's answer is the YES probability. We keep
-``wisdom_outcome`` explicit so downstream analytics never has to think
-about ordering.
-
-Simple by design — we assume Polymarket-style ``"Yes"`` labelling and let
-the caller normalise. The full case-insensitive lookup lives in a SQL
-expression so we don't hit PySpark's Python-vs-Column-indexing edges.
+A binary market has two outcomes (Yes/No, YES/NO, True/False — labels vary
+by source) and prices summing to ~1. The crowd's answer is whichever
+outcome carries the higher price. We take the max price as ``wisdom`` and
+the corresponding outcome label as ``wisdom_outcome`` — this is
+identical to the categorical case, just constrained to two outcomes, so
+we work off ``array_max`` / ``array_position`` on prices rather than
+hard-coding the label ``'Yes'`` (Polymarket uses ``'YES'``, others may
+differ).
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ def aggregate() -> Column:
     return F.expr(
         """
         struct(
-          element_at(prices,   CAST(array_position(outcomes, 'Yes') AS INT)) as wisdom,
-          element_at(outcomes, CAST(array_position(outcomes, 'Yes') AS INT)) as wisdom_outcome,
-          coalesce(trader_count, 0L)                                          as guesses_count
+          array_max(prices)                                                    as wisdom,
+          element_at(outcomes, CAST(array_position(prices, array_max(prices)) AS INT)) as wisdom_outcome,
+          coalesce(trader_count, 0L)                                            as guesses_count
         )
-        """
+        """,
     )

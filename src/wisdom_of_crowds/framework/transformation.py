@@ -243,6 +243,13 @@ def _overwrite_partition(
     is_table = _is_table_name(target)
     partition_by = list(spec.partition_by)
 
+    if is_table:
+        # Pre-create the table if it doesn't exist yet. Without this,
+        # parallel first-writes race — one wins, the other gets
+        # ``TABLE_OR_VIEW_ALREADY_EXISTS`` from ``saveAsTable(mode=overwrite)``.
+        # ``CREATE TABLE IF NOT EXISTS`` is idempotent under concurrency.
+        _ensure_delta_table(df, target, partition_by)
+
     if is_table and spec.replace_where:
         where = _fill_placeholders(spec.replace_where, params)
         writer = (
@@ -262,6 +269,32 @@ def _overwrite_partition(
         if partition_by:
             writer = writer.partitionBy(*partition_by)
         writer.parquet(target)
+
+
+def _ensure_delta_table(
+    df: DataFrame,
+    target: str,
+    partition_by: list[str],
+) -> None:
+    """Idempotent ``CREATE TABLE IF NOT EXISTS ... USING DELTA``.
+
+    Uses the DataFrame's schema to build the DDL, so every downstream
+    write sees a table it can ``replaceWhere`` into — even on the first
+    parallel wave against an empty catalog.
+    """
+    spark = df.sparkSession
+    schema_ddl = ", ".join(
+        f"{f.name} {f.dataType.simpleString()}"
+        + (" NOT NULL" if not f.nullable else "")
+        for f in df.schema.fields
+    )
+    partition_clause = (
+        f" PARTITIONED BY ({', '.join(partition_by)})" if partition_by else ""
+    )
+    spark.sql(
+        f"CREATE TABLE IF NOT EXISTS {target} ({schema_ddl}) "
+        f"USING DELTA{partition_clause}",
+    )
 
 
 def _append(df: DataFrame, target: str, spec: OutputSpec) -> None:
