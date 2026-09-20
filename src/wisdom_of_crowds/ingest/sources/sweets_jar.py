@@ -20,7 +20,7 @@ from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType
 class SweetsJarSource(Source):
     """Read the tiny ``name,guess`` CSV bundled with this project.
 
-    The CSV is small (~200 rows), so we parse it in the driver with
+    The CSV is small (~60 rows — the Galton replication), so we parse it in the driver with
     stdlib ``csv`` and hand the result to ``spark.createDataFrame``. That
     avoids two headaches:
 
