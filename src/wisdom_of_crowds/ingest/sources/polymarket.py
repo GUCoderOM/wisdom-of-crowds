@@ -234,12 +234,17 @@ class PolymarketSource(Source):
             else:
                 raise TimeoutError(f"Dune query {query_id} did not complete in time")
 
-            # Paginate result rows.
+            # Paginate result rows. Dune returns TWO counts in metadata:
+            # ``row_count`` = rows on this page, ``total_row_count`` =
+            # rows in the whole execution. The stop condition is
+            # ``total_row_count`` — reading ``row_count`` caps at page
+            # size (verified live: metadata carries both).
+            page_size   = 25000
             next_offset = 0
             while True:
                 page = self._get_json(
                     _DUNE_BASE, f"/execution/{execution_id}/results",
-                    query={"limit": 25000, "offset": next_offset},
+                    query={"limit": page_size, "offset": next_offset},
                     headers={"X-DUNE-API-KEY": api_key},
                 )
                 result = page.get("result") or {}
@@ -249,9 +254,13 @@ class PolymarketSource(Source):
                 for r in rows:
                     yield r
                 meta = result.get("metadata") or {}
-                row_count = int(meta.get("row_count") or 0)
+                total_rows = int(meta.get("total_row_count") or 0)
                 next_offset += len(rows)
-                if next_offset >= row_count:
+                if total_rows and next_offset >= total_rows:
+                    return
+                # If Dune didn't populate total_row_count (rare), fall
+                # back to "partial page means done".
+                if not total_rows and len(rows) < page_size:
                     return
         finally:
             # Archive the auto-created query so every run leaves no trace.
