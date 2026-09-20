@@ -7,9 +7,12 @@ requires-python = ">=3.11,<3.12"
 license = { text = "MIT" }
 authors = [{ name = "Yousuf Abdullatif" }]
 
+# Runtime deps only. pyspark is deliberately NOT here: every environment that
+# runs this wheel (serverless, DBR) already provides Spark, and installing
+# pyspark alongside it shadows the built-in client so the wheel fails to
+# import — the same conflict requirements-connect.txt documents for
+# databricks-connect. Local Spark comes from the "local"/"dev" extras.
 dependencies = [
-    # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0).
-    "pyspark==4.0.0",
     "pyarrow>=18.0.0",
     "pandas>=2.2.0,<3.0.0",
     "pyyaml>=6.0.1",
@@ -18,10 +21,13 @@ dependencies = [
 
 [project.optional-dependencies]
 local = [
+    # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0).
+    "pyspark==4.0.0",
     "jupyterlab>=4.2",
     "ipykernel>=6.29",
 ]
 dev = [
+    "pyspark==4.0.0",
     "pytest>=8.3",
     "pytest-mock>=3.14",
     "ruff>=0.6",
