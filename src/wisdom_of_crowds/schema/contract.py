@@ -2,7 +2,7 @@
 
 A cheap upfront guard so that a mis-shaped input DataFrame fails loudly at
 the boundary. Kept for backward compatibility with the original
-``transforms.py`` API; new code should use :mod:`wisdom_of_crowds.schema.silver`
+``transforms.py`` API; new code should use :mod:`wisdom_of_crowds.schema.guesses`
 directly.
 """
 

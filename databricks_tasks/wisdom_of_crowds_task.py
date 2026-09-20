@@ -11,15 +11,15 @@
 #   phase         - "ingest" | "aggregate" | "end_to_end"
 #   source_slug   - registry slug: sweets_jar | spf | manifold | ecb_spf | aaii | noaa
 #                   (unused when phase = "aggregate" without a per-source filter)
-#   silver_table  - fully-qualified silver Delta table
-#   gold_table    - fully-qualified gold Delta table
+#   guesses_table  - fully-qualified silver Delta table
+#   wisdom_table    - fully-qualified gold Delta table
 #   sources_table - fully-qualified dimension table
 #   wheel_path    - workspace path to the installed wheel
 
 dbutils.widgets.text("phase",         "ingest")
 dbutils.widgets.text("source_slug",   "spf")
-dbutils.widgets.text("silver_table",  "wisdom_of_crowds.core.silver")
-dbutils.widgets.text("gold_table",    "wisdom_of_crowds.core.gold")
+dbutils.widgets.text("guesses_table",  "wisdom_of_crowds.core.guesses")
+dbutils.widgets.text("wisdom_table",    "wisdom_of_crowds.core.wisdom")
 dbutils.widgets.text("sources_table", "wisdom_of_crowds.core.sources")
 dbutils.widgets.text("wheel_path",    "")
 
@@ -53,8 +53,8 @@ import sys
 
 phase          = dbutils.widgets.get("phase").strip().lower()
 source_slug    = dbutils.widgets.get("source_slug").strip()
-silver_table   = dbutils.widgets.get("silver_table")
-gold_table     = dbutils.widgets.get("gold_table")
+guesses_table   = dbutils.widgets.get("guesses_table")
+wisdom_table     = dbutils.widgets.get("wisdom_table")
 sources_table  = dbutils.widgets.get("sources_table")
 
 if phase not in {"ingest", "aggregate", "end_to_end"}:
@@ -72,7 +72,7 @@ if phase in {"ingest", "end_to_end"}:
     sys.argv = [
         "vox-ingest",
         "--source-slug",    source_slug,
-        "--silver-output",  silver_table,
+        "--guesses-output",  guesses_table,
         "--sources-output", sources_table,
     ]
     ingest_main()
@@ -81,8 +81,8 @@ if phase in {"aggregate", "end_to_end"}:
     from wisdom_of_crowds.aggregate_cli import main as agg_main
     argv = [
         "vox-aggregate",
-        "--silver-source", silver_table,
-        "--gold-output",   gold_table,
+        "--guesses-source", guesses_table,
+        "--wisdom-output",   wisdom_table,
         "--cycle-dt",      dt.date.today().isoformat(),
     ]
     # Aggregating a single source is more efficient (partition pruning);

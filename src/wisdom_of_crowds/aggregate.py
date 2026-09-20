@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from wisdom_of_crowds.schema.gold import GoldColumns
-from wisdom_of_crowds.schema.silver import SilverColumns
+from wisdom_of_crowds.schema.wisdom import WisdomColumns
+from wisdom_of_crowds.schema.guesses import GuessColumns
 from wisdom_of_crowds.strategies import STRATEGY_REGISTRY
 
 _log = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ class AggregateJobConfig:
     """Runtime parameters for :func:`run`. Passed as CLI args or notebook
     widgets, resolved via the same convention we use elsewhere."""
 
-    silver_source:  str          # a table name (``cat.sch.tab``) or a path
-    gold_output:    str          # a Delta table name or a Parquet directory
+    guesses_source:  str          # a table name (``cat.sch.tab``) or a path
+    wisdom_output:    str          # a Delta table name or a Parquet directory
     cycle_dt:       dt.date      # partition key for this run
     source_id:      int | None = None  # if set, aggregate only this source's slice
 
@@ -39,19 +39,19 @@ class AggregateJobConfig:
 def run(spark: SparkSession, cfg: AggregateJobConfig) -> DataFrame:
     """Read silver, apply the correct strategy per row, write gold, return
     the gold DataFrame for verification."""
-    silver = _read(spark, cfg.silver_source, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
+    silver = _read(spark, cfg.guesses_source, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
     gold = build_gold(silver, cfg.cycle_dt)
-    _write(gold, cfg.gold_output, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
+    _write(gold, cfg.wisdom_output, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
     _log.info("aggregate_complete", extra={
         "rows_written": gold.count(),
         "cycle_dt": cfg.cycle_dt.isoformat(),
         "source_id": cfg.source_id,
-        "gold_output": cfg.gold_output,
+        "wisdom_output": cfg.wisdom_output,
     })
     return gold
 
 
-def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
+def build_gold(guesses: DataFrame, cycle_dt: dt.date) -> DataFrame:
     """Compute gold rows from silver — pure function, no I/O.
 
     Dispatches on ``question_type``: each strategy contributes a struct
@@ -63,9 +63,9 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
     for qtype, strategy in STRATEGY_REGISTRY.items():
         expr = strategy()
         when_chain = (
-            F.when(F.col(SilverColumns.QUESTION_TYPE) == qtype, expr)
+            F.when(F.col(GuessColumns.QUESTION_TYPE) == qtype, expr)
             if when_chain is None
-            else when_chain.when(F.col(SilverColumns.QUESTION_TYPE) == qtype, expr)
+            else when_chain.when(F.col(GuessColumns.QUESTION_TYPE) == qtype, expr)
         )
     result = when_chain
     assert result is not None, "STRATEGY_REGISTRY is empty"
@@ -73,24 +73,24 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
     projected = silver.withColumn("_result", result)
 
     gold = projected.select(
-        F.col(SilverColumns.SOURCE_ID).alias(GoldColumns.SOURCE_ID),
-        F.col(SilverColumns.SOURCE).alias(GoldColumns.SOURCE),
-        F.col(SilverColumns.MARKET_ID).alias(GoldColumns.MARKET_ID),
-        F.col(SilverColumns.QUESTION).alias(GoldColumns.QUESTION),
-        F.col(SilverColumns.QUESTION_TYPE).alias(GoldColumns.QUESTION_TYPE),
-        F.col("_result.wisdom").alias(GoldColumns.WISDOM),
-        F.col("_result.wisdom_outcome").alias(GoldColumns.WISDOM_OUTCOME),
-        F.col("_result.guesses_count").alias(GoldColumns.GUESSES),
-        F.col(SilverColumns.RESOLVED_VALUE).alias(GoldColumns.RESOLVED_VALUE),
-        (F.col("_result.wisdom") - F.col(SilverColumns.RESOLVED_VALUE))
-            .alias(GoldColumns.SIGNED_ERROR),
+        F.col(GuessColumns.SOURCE_ID).alias(WisdomColumns.SOURCE_ID),
+        F.col(GuessColumns.SOURCE).alias(WisdomColumns.SOURCE),
+        F.col(GuessColumns.MARKET_ID).alias(WisdomColumns.MARKET_ID),
+        F.col(GuessColumns.QUESTION).alias(WisdomColumns.QUESTION),
+        F.col(GuessColumns.QUESTION_TYPE).alias(WisdomColumns.QUESTION_TYPE),
+        F.col("_result.wisdom").alias(WisdomColumns.WISDOM),
+        F.col("_result.wisdom_outcome").alias(WisdomColumns.WISDOM_OUTCOME),
+        F.col("_result.guesses_count").alias(WisdomColumns.GUESSES),
+        F.col(GuessColumns.RESOLVED_VALUE).alias(WisdomColumns.RESOLVED_VALUE),
+        (F.col("_result.wisdom") - F.col(GuessColumns.RESOLVED_VALUE))
+            .alias(WisdomColumns.SIGNED_ERROR),
         F.when(
-            F.col(SilverColumns.RESOLVED_VALUE).isNotNull() &
-            (F.col(SilverColumns.RESOLVED_VALUE) != 0),
-            100.0 * (F.col("_result.wisdom") - F.col(SilverColumns.RESOLVED_VALUE))
-                  / F.col(SilverColumns.RESOLVED_VALUE),
-        ).alias(GoldColumns.SIGNED_PERCENT_ERROR),
-        F.lit(cycle_dt).cast("date").alias(GoldColumns.CYCLE_DT),
+            F.col(GuessColumns.RESOLVED_VALUE).isNotNull() &
+            (F.col(GuessColumns.RESOLVED_VALUE) != 0),
+            100.0 * (F.col("_result.wisdom") - F.col(GuessColumns.RESOLVED_VALUE))
+                  / F.col(GuessColumns.RESOLVED_VALUE),
+        ).alias(WisdomColumns.SIGNED_PERCENT_ERROR),
+        F.lit(cycle_dt).cast("date").alias(WisdomColumns.CYCLE_DT),
     )
     # Contract: gold and silver stay 1:1 per (source_id, market_id,
     # cycle_dt). Rows where the strategy couldn't compute a wisdom
@@ -120,9 +120,9 @@ def _read(
     """Read silver, scoped down to the partition(s) being aggregated so a
     single-source aggregate doesn't scan the entire history."""
     df = spark.read.table(source) if _is_table_name(source) else spark.read.parquet(source)
-    df = df.filter(F.col(SilverColumns.CYCLE_DT) == F.lit(cycle_dt).cast("date"))
+    df = df.filter(F.col(GuessColumns.CYCLE_DT) == F.lit(cycle_dt).cast("date"))
     if source_id is not None:
-        df = df.filter(F.col(SilverColumns.SOURCE_ID) == source_id)
+        df = df.filter(F.col(GuessColumns.SOURCE_ID) == source_id)
     return df
 
 
@@ -148,12 +148,12 @@ def _write(
         (
             df.write.format("delta").mode("overwrite")
               .option("replaceWhere", replace_where)
-              .partitionBy(GoldColumns.CYCLE_DT, GoldColumns.SOURCE_ID)
+              .partitionBy(WisdomColumns.CYCLE_DT, WisdomColumns.SOURCE_ID)
               .saveAsTable(target)
         )
     else:
         (
             df.write.mode("overwrite")
-              .partitionBy(GoldColumns.CYCLE_DT, GoldColumns.SOURCE_ID)
+              .partitionBy(WisdomColumns.CYCLE_DT, WisdomColumns.SOURCE_ID)
               .parquet(target)
         )

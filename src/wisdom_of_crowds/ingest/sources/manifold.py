@@ -8,13 +8,13 @@ was buying at, which is that trader's revealed estimate at that moment.
 
 This source ingests two things per run:
 
-1. **Aggregate silver rows** — one per market, dispatched to the right
+1. **Aggregate ``guesses`` rows** — one per market, dispatched to the right
    ``question_type`` (``binary`` / ``categorical`` / ``poll_categorical`` /
    ``numeric_guesses``).
-2. **Raw individual bets** — a full-fidelity ``manifold_bets`` table for
-   later analysis. Written to ``<silver_output>/../manifold_bets`` when the
-   output is a Delta table, or ``<silver_output>/manifold_bets`` when it is
-   a filesystem path.
+2. **Individual bets** — one row per bet, written to the shared
+   ``wisdom_of_crowds.core.bets`` table (schema:
+   :mod:`wisdom_of_crowds.schema.bets`). This is the per-trader fidelity
+   behind each aggregate row.
 
 Reference: https://docs.manifold.markets/api
 """
@@ -31,22 +31,11 @@ import urllib.request
 from typing import Any, Iterable
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    ArrayType,
-    BooleanType,
-    DateType,
-    DoubleType,
-    IntegerType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
+from pyspark.sql.types import ArrayType, DoubleType
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType, SilverColumns  # noqa: F401
+from wisdom_of_crowds.schema.bets import BETS_SCHEMA
+from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType
 from wisdom_of_crowds.schema.sources import get_meta
 
 _log = logging.getLogger(__name__)
@@ -60,28 +49,6 @@ _FREE_RESP    = "FREE_RESPONSE"
 _POLL         = "POLL"
 _PSEUDO_NUM   = "PSEUDO_NUMERIC"
 _NUMERIC      = "NUMERIC"
-
-
-BETS_SCHEMA: StructType = StructType([
-    StructField("source_id",    IntegerType(),   nullable=False),
-    StructField("source",       StringType(),    nullable=False),
-    StructField("market_id",    StringType(),    nullable=False),
-    StructField("market_slug",  StringType(),    nullable=True),
-    StructField("bet_id",       StringType(),    nullable=False),
-    StructField("user_id",      StringType(),    nullable=True),
-    StructField("amount",       DoubleType(),    nullable=True),
-    StructField("shares",       DoubleType(),    nullable=True),
-    StructField("outcome",      StringType(),    nullable=True),
-    StructField("prob_before",  DoubleType(),    nullable=True),
-    StructField("prob_after",   DoubleType(),    nullable=True),
-    StructField("is_filled",    BooleanType(),   nullable=True),
-    StructField("created_at",   TimestampType(), nullable=True),
-    StructField("cycle_ts",     TimestampType(), nullable=False),
-    StructField("cycle_dt",     DateType(),      nullable=False),
-])
-"""One row per Manifold bet — kept in its own table for full-fidelity
-analysis. The aggregate silver row summarises the market; this preserves
-every individual data point behind it."""
 
 
 class ManifoldSource(Source):
@@ -214,6 +181,7 @@ class ManifoldSource(Source):
         for b in bets:
             created = b.get("createdTime")
             created_ts = dt.datetime.fromtimestamp(created / 1000, tz=dt.timezone.utc) if created else None
+            prob_after = _f(b.get("probAfter"))
             bet_rows.append((
                 source_pk,
                 self.slug,
@@ -224,8 +192,9 @@ class ManifoldSource(Source):
                 _f(b.get("amount")),
                 _f(b.get("shares")),
                 b.get("outcome"),
+                prob_after,                # price — Manifold's post-bet probability
                 _f(b.get("probBefore")),
-                _f(b.get("probAfter")),
+                prob_after,
                 bool(b.get("isFilled")) if b.get("isFilled") is not None else None,
                 created_ts,
                 cfg.cycle_ts,

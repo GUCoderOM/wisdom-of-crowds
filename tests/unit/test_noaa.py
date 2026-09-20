@@ -16,7 +16,7 @@ from pyspark.sql import SparkSession
 from wisdom_of_crowds.ingest.base import SourceConfig
 from wisdom_of_crowds.ingest.sources import noaa
 from wisdom_of_crowds.ingest.sources.noaa import NOAASource
-from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType
+from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType
 
 CYCLE_TS = dt.datetime(2026, 9, 20, 6, 30, tzinfo=dt.UTC)
 BASE_DAY = "2026-09-20"

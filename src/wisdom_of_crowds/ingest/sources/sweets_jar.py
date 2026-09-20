@@ -14,7 +14,7 @@ import pathlib
 from pyspark.sql import DataFrame, SparkSession
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType
+from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType
 
 
 class SweetsJarSource(Source):

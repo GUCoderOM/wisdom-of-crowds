@@ -19,7 +19,7 @@ from pyspark.sql import SparkSession
 from wisdom_of_crowds.ingest.base import SourceConfig
 from wisdom_of_crowds.ingest.sources import ecb_spf
 from wisdom_of_crowds.ingest.sources.ecb_spf import ECBSPFSource
-from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType, SilverColumns
+from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType, GuessColumns
 
 CYCLE_TS = dt.datetime(2026, 9, 20, 12, 0, 0)
 
@@ -102,7 +102,7 @@ def _extract(spark, monkeypatch, payload, **params):
 
 
 def _by_market_id(df) -> dict:
-    return {r[SilverColumns.MARKET_ID]: r for r in df.collect()}
+    return {r[GuessColumns.MARKET_ID]: r for r in df.collect()}
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +123,13 @@ def test_emits_one_row_per_variable_round_and_target_quarter(spark, monkeypatch,
 def test_guesses_collect_every_forecaster_in_the_cell(spark, monkeypatch, archive):
     row = _by_market_id(_extract(spark, monkeypatch, archive))["ecb_spf:rgdp:2026Q3:2027Q1"]
 
-    assert sorted(row[SilverColumns.GUESSES]) == [1.3, 1.5]
+    assert sorted(row[GuessColumns.GUESSES]) == [1.3, 1.5]
 
 
 def test_question_names_variable_target_and_survey_round(spark, monkeypatch, archive):
     row = _by_market_id(_extract(spark, monkeypatch, archive))["ecb_spf:hicp:2026Q3:2027Q2"]
 
-    assert row[SilverColumns.QUESTION] == (
+    assert row[GuessColumns.QUESTION] == (
         "ECB SPF: HICP inflation, target 2027Q2 (surveyed 2026Q3)"
     )
 
@@ -137,17 +137,17 @@ def test_question_names_variable_target_and_survey_round(spark, monkeypatch, arc
 def test_row_carries_silver_defaults_for_a_numeric_question(spark, monkeypatch, archive):
     row = _by_market_id(_extract(spark, monkeypatch, archive))["ecb_spf:hicp:2026Q3:2027Q2"]
 
-    assert row[SilverColumns.SOURCE] == "ecb_spf"
-    assert row[SilverColumns.QUESTION_TYPE] == QuestionType.NUMERIC_GUESSES
-    assert row[SilverColumns.OUTCOMES] is None
-    assert row[SilverColumns.PRICES] is None
-    assert row[SilverColumns.TRADER_COUNT] is None
-    assert row[SilverColumns.VOLUME_USD] is None
-    assert row[SilverColumns.END_DATE] is None
-    assert row[SilverColumns.IS_RESOLVED] is False
-    assert row[SilverColumns.RESOLVED_OUTCOME] is None
-    assert row[SilverColumns.RESOLVED_VALUE] is None
-    assert row[SilverColumns.CYCLE_TS] == CYCLE_TS
+    assert row[GuessColumns.SOURCE] == "ecb_spf"
+    assert row[GuessColumns.QUESTION_TYPE] == QuestionType.NUMERIC_GUESSES
+    assert row[GuessColumns.OUTCOMES] is None
+    assert row[GuessColumns.PRICES] is None
+    assert row[GuessColumns.TRADER_COUNT] is None
+    assert row[GuessColumns.VOLUME_USD] is None
+    assert row[GuessColumns.END_DATE] is None
+    assert row[GuessColumns.IS_RESOLVED] is False
+    assert row[GuessColumns.RESOLVED_OUTCOME] is None
+    assert row[GuessColumns.RESOLVED_VALUE] is None
+    assert row[GuessColumns.CYCLE_TS] == CYCLE_TS
 
 
 def test_output_conforms_to_the_silver_schema(spark, monkeypatch, archive):
@@ -200,7 +200,7 @@ def test_blank_point_forecasts_are_dropped(spark, monkeypatch, archive):
     # Forecaster 7 filled in the bins but left POINT empty.
     row = _by_market_id(_extract(spark, monkeypatch, archive))["ecb_spf:hicp:2026Q3:2027Q2"]
 
-    assert sorted(row[SilverColumns.GUESSES]) == [1.9, 2.1]
+    assert sorted(row[GuessColumns.GUESSES]) == [1.9, 2.1]
 
 
 def test_assumptions_block_is_ignored(spark, monkeypatch, archive):
@@ -209,7 +209,7 @@ def test_assumptions_block_is_ignored(spark, monkeypatch, archive):
     guesses = [
         g
         for row in _extract(spark, monkeypatch, archive).collect()
-        for g in row[SilverColumns.GUESSES]
+        for g in row[GuessColumns.GUESSES]
     ]
 
     assert 70.0 not in guesses  # the OIL column

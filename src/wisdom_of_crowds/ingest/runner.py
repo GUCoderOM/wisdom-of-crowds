@@ -6,11 +6,11 @@ Called as a console script (``vox-ingest``) or as a Databricks task. It:
 2. Loads the source's YAML config from ``config/sources/<slug>.yaml``
    (or a ``--config-path`` override).
 3. Instantiates the ``Source`` and calls ``extract`` — the source returns a
-   DataFrame in :data:`~wisdom_of_crowds.schema.silver.INGEST_SCHEMA` shape.
+   DataFrame in :data:`~wisdom_of_crowds.schema.guesses.INGEST_SCHEMA` shape.
 4. **Enriches** each row with the integer ``source_id`` (looked up from
    :data:`~wisdom_of_crowds.schema.sources.SOURCE_CATALOG`) and ``cycle_dt``
    (derived from ``cycle_ts``) so it matches
-   :data:`~wisdom_of_crowds.schema.silver.SILVER_SCHEMA`.
+   :data:`~wisdom_of_crowds.schema.guesses.GUESSES_SCHEMA`.
 5. Upserts the dimension row in ``wisdom_of_crowds.core.sources``.
 6. Writes silver, partitioned by ``(cycle_dt, source_id)``, with a
    ``replaceWhere`` that scopes the truncate-load to this run's partition
@@ -33,24 +33,24 @@ from pyspark.sql import functions as F
 
 from wisdom_of_crowds.ingest.base import SourceConfig
 from wisdom_of_crowds.ingest.registry import SOURCES
-from wisdom_of_crowds.schema.silver import SILVER_SCHEMA, SilverColumns
+from wisdom_of_crowds.schema.guesses import GUESSES_SCHEMA, GuessColumns
 from wisdom_of_crowds.schema.sources import ensure_source_row, get_meta
 
 _log = logging.getLogger(__name__)
 
 # The dimension table lives next to silver. Callers may override via
 # IngestJobConfig.sources_output; if unset the runner derives it from
-# silver_output by swapping the last name segment.
+# guesses_output by swapping the last name segment.
 _DEFAULT_SOURCES_TABLE = "wisdom_of_crowds.core.sources"
 
 
 @dataclass(frozen=True)
 class IngestJobConfig:
     source_slug:    str
-    silver_output:  str
+    guesses_output:  str
     config_path:    str | None = None
     cycle_ts:       dt.datetime | None = None
-    sources_output: str | None = None  # dimension table target; default derived from silver_output
+    sources_output: str | None = None  # dimension table target; default derived from guesses_output
 
 
 def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
@@ -72,12 +72,12 @@ def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
     # cycle. The dimension row means "we have data for this source at
     # this ts", not "we tried to run this source".
     ingested: DataFrame = source.extract(spark, src_cfg)
-    silver: DataFrame = _enrich(ingested, source_id=meta.source_id, cycle_dt=cycle_dt)
+    guesses: DataFrame = _enrich(ingested, source_id=meta.source_id, cycle_dt=cycle_dt)
 
-    _write(silver, cfg.silver_output, source_id=meta.source_id, cycle_dt=cycle_dt)
+    _write(silver, cfg.guesses_output, source_id=meta.source_id, cycle_dt=cycle_dt)
 
     # Only after silver is committed do we advance the dimension row.
-    sources_target = cfg.sources_output or _derive_sources_target(cfg.silver_output)
+    sources_target = cfg.sources_output or _derive_sources_target(cfg.guesses_output)
     ensure_source_row(spark, sources_target, cfg.source_slug, cycle_ts)
 
     n = silver.count()
@@ -85,7 +85,7 @@ def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
         "source_slug":    cfg.source_slug,
         "source_id":      meta.source_id,
         "rows_written":   n,
-        "silver_output":  cfg.silver_output,
+        "guesses_output":  cfg.guesses_output,
         "sources_output": sources_target,
         "cycle_dt":       cycle_dt.isoformat(),
     })
@@ -99,25 +99,25 @@ def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
 
 def _enrich(df: DataFrame, *, source_id: int, cycle_dt: dt.date) -> DataFrame:
     """Add ``source_id`` and ``cycle_dt`` to a source's INGEST_SCHEMA output
-    and reorder into SILVER_SCHEMA."""
+    and reorder into GUESSES_SCHEMA."""
     enriched = (
-        df.withColumn(SilverColumns.SOURCE_ID, F.lit(source_id).cast("int"))
-          .withColumn(SilverColumns.CYCLE_DT,  F.lit(cycle_dt).cast("date"))
+        df.withColumn(GuessColumns.SOURCE_ID, F.lit(source_id).cast("int"))
+          .withColumn(GuessColumns.CYCLE_DT,  F.lit(cycle_dt).cast("date"))
     )
-    return enriched.select(*[F.col(c) for c in SILVER_SCHEMA.fieldNames()])
+    return enriched.select(*[F.col(c) for c in GUESSES_SCHEMA.fieldNames()])
 
 
-def _derive_sources_target(silver_output: str) -> str:
+def _derive_sources_target(guesses_output: str) -> str:
     """Given a silver table name or path, return the sources dimension
     table sibling. Table naming convention: same catalog + schema as
     silver, table name ``sources``. Path convention: sibling directory
     ``sources/`` next to the silver Parquet directory.
     """
-    if _is_table_name(silver_output):
-        parts = silver_output.split(".")
+    if _is_table_name(guesses_output):
+        parts = guesses_output.split(".")
         parts[-1] = "sources"
         return ".".join(parts)
-    return str(pathlib.Path(silver_output).parent / "sources")
+    return str(pathlib.Path(guesses_output).parent / "sources")
 
 
 def _load_params(source_slug: str, override_path: str | None) -> Mapping[str, Any]:
@@ -167,14 +167,14 @@ def _write(
         (
             df.write.format("delta").mode("overwrite")
               .option("replaceWhere", replace_where)
-              .partitionBy(SilverColumns.CYCLE_DT, SilverColumns.SOURCE_ID)
+              .partitionBy(GuessColumns.CYCLE_DT, GuessColumns.SOURCE_ID)
               .saveAsTable(target)
         )
     else:
         # Local dev: Parquet, partition-style layout per (cycle_dt, source_id).
         (
             df.write.mode("overwrite")
-              .partitionBy(SilverColumns.CYCLE_DT, SilverColumns.SOURCE_ID)
+              .partitionBy(GuessColumns.CYCLE_DT, GuessColumns.SOURCE_ID)
               .parquet(target)
         )
 
@@ -191,7 +191,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # requirement — validated after parse.
     p.add_argument("--source-slug",   default=None,  help="Source slug (e.g. 'spf').")
     p.add_argument("--source-id",     default=None,  help="Alias for --source-slug (legacy).")
-    p.add_argument("--silver-output", required=True, help="Delta table name or Parquet directory.")
+    p.add_argument("--guesses-output", required=True, help="Delta table name or Parquet directory.")
     p.add_argument("--sources-output", default=None, help="Dimension table name; default derived.")
     p.add_argument("--config-path",   default=None,  help="Optional YAML config override.")
     return p
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> None:
     spark = SparkSession.builder.appName(f"vox-ingest-{slug}").getOrCreate()
     run(spark, IngestJobConfig(
         source_slug=slug,
-        silver_output=args.silver_output,
+        guesses_output=args.guesses_output,
         config_path=args.config_path,
         sources_output=args.sources_output,
     ))

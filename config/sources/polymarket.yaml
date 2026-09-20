@@ -1,0 +1,13 @@
+# Parameters for the Polymarket ingestion source.
+#
+# Polymarket is a real-money prediction market: markets come from the Gamma
+# API, individual trades from the Data API. Each market becomes one guesses
+# row; each trade becomes one `bets` row, written to the same generic table
+# Manifold writes to so per-individual activity sits side by side.
+
+limit_markets:           100    # top-N markets by recent activity
+limit_trades_per_market: 500    # trades per market
+min_trade_count:         5      # skip markets with too few traders
+include_closed:          false  # only live markets by default
+
+bets_output:             wisdom_of_crowds.core.bets

@@ -11,7 +11,7 @@ from typing import Callable
 
 from pyspark.sql import Column
 
-from wisdom_of_crowds.schema.silver import QuestionType
+from wisdom_of_crowds.schema.guesses import QuestionType
 from wisdom_of_crowds.strategies import binary_market, categorical, numeric_guesses
 
 # A strategy is a pure function: given the columns of a silver row, return

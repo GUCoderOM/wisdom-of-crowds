@@ -73,8 +73,9 @@ SOURCE_CATALOG: dict[str, SourceMeta] = {
     "spf":        SourceMeta(2, "spf",        "Philadelphia Fed SPF"),
     "manifold":   SourceMeta(3, "manifold",   "Manifold Markets"),
     "ecb_spf":    SourceMeta(4, "ecb_spf",    "ECB Survey of Professional Forecasters"),
-    "aaii":       SourceMeta(5, "aaii",       "AAII Investor Sentiment"),
+    # source_id=5 was AAII, retired (no free per-respondent feed). NEVER REUSE.
     "noaa":       SourceMeta(6, "noaa",       "NOAA GEFS Ensemble Weather"),
+    "polymarket": SourceMeta(7, "polymarket", "Polymarket"),
 }
 
 

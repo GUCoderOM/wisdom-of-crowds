@@ -13,9 +13,9 @@ from wisdom_of_crowds.aggregate import AggregateJobConfig, run
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Wisdom-of-crowds aggregate job.")
-    p.add_argument("--silver-source", required=True,
+    p.add_argument("--guesses-source", required=True,
                    help="Silver Delta table name or Parquet directory to read from.")
-    p.add_argument("--gold-output",   required=True,
+    p.add_argument("--wisdom-output",   required=True,
                    help="Gold Delta table name or Parquet directory to write to.")
     p.add_argument("--cycle-dt",      default=None,
                    help="ISO date for this cycle (YYYY-MM-DD). Default: today (UTC).")
@@ -38,8 +38,8 @@ def main(argv: list[str] | None = None) -> None:
         source_id = get_meta(args.source_slug).source_id
     spark = SparkSession.builder.appName("vox-aggregate").getOrCreate()
     run(spark, AggregateJobConfig(
-        silver_source=args.silver_source,
-        gold_output=args.gold_output,
+        guesses_source=args.guesses_source,
+        wisdom_output=args.wisdom_output,
         cycle_dt=cycle_dt,
         source_id=source_id,
     ))

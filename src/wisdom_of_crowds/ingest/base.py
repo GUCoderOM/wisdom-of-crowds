@@ -1,7 +1,7 @@
 """The ingest ``Source`` contract.
 
 A ``Source`` knows how to turn the raw payload of one external system into
-:data:`~wisdom_of_crowds.schema.silver.INGEST_SCHEMA`-shaped rows. It knows
+:data:`~wisdom_of_crowds.schema.guesses.INGEST_SCHEMA`-shaped rows. It knows
 nothing about the integer ``source_id``, the ``cycle_dt`` partition key,
 or where silver lives — the runner handles all of that.
 
@@ -51,7 +51,7 @@ class Source(abc.ABC):
     @abc.abstractmethod
     def extract(self, spark: SparkSession, cfg: SourceConfig) -> DataFrame:
         """Return a DataFrame conforming to
-        :data:`wisdom_of_crowds.schema.silver.INGEST_SCHEMA` (no
+        :data:`wisdom_of_crowds.schema.guesses.INGEST_SCHEMA` (no
         ``source_id`` or ``cycle_dt`` — the runner adds those).
 
         Implementations are responsible for downloading / reading the source

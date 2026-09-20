@@ -1,6 +1,6 @@
 [project]
 name = "wisdom-of-crowds"
-version = "0.3.0"
+version = "0.4.0"
 description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment, generalised into a data pipeline over any source that carries individual guesses."
 readme = "README.md"
 requires-python = ">=3.11"

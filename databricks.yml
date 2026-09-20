@@ -21,12 +21,12 @@ variables:
   schema:
     description: Schema within the catalog holding wisdom-of-crowds tables.
     default:     core
-  silver_table:
-    description: Fully-qualified silver Delta table.
-    default:     ${var.catalog}.${var.schema}.silver
-  gold_table:
-    description: Fully-qualified gold Delta table.
-    default:     ${var.catalog}.${var.schema}.gold
+  guesses_table:
+    description: Fully-qualified guesses Delta table.
+    default:     ${var.catalog}.${var.schema}.guesses
+  wisdom_table:
+    description: Fully-qualified wisdom Delta table.
+    default:     ${var.catalog}.${var.schema}.wisdom
   sources_table:
     description: Fully-qualified source dimension table.
     default:     ${var.catalog}.${var.schema}.sources
@@ -41,7 +41,7 @@ variables:
       Workspace path of the uploaded wheel. The task pip-installs this
       in-notebook; a non-empty serverless `dependencies` list restarts the
       Python REPL underneath a running notebook.
-    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.3.0-py3-none-any.whl
+    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.4.0-py3-none-any.whl
 
 targets:
   dev:
@@ -76,10 +76,10 @@ resources:
           default: ${var.default_phase}
         - name:    source_slug
           default: ${var.default_source_slug}
-        - name:    silver_table
-          default: ${var.silver_table}
-        - name:    gold_table
-          default: ${var.gold_table}
+        - name:    guesses_table
+          default: ${var.guesses_table}
+        - name:    wisdom_table
+          default: ${var.wisdom_table}
         - name:    sources_table
           default: ${var.sources_table}
 
@@ -90,7 +90,7 @@ resources:
             base_parameters:
               phase:         "{{job.parameters.phase}}"
               source_slug:   "{{job.parameters.source_slug}}"
-              silver_table:  "{{job.parameters.silver_table}}"
-              gold_table:    "{{job.parameters.gold_table}}"
+              guesses_table:  "{{job.parameters.guesses_table}}"
+              wisdom_table:    "{{job.parameters.wisdom_table}}"
               sources_table: "{{job.parameters.sources_table}}"
               wheel_path:    ${var.wheel_path}
