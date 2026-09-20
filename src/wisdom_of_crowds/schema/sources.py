@@ -35,7 +35,7 @@ _log = logging.getLogger(__name__)
 
 
 class SourceColumns:
-    """Column-name constants for ``vox_populi_sources``."""
+    """Column-name constants for ``wisdom_of_crowds.core.sources``."""
 
     SOURCE_ID       = "source_id"
     SOURCE_SLUG     = "source"
@@ -51,7 +51,7 @@ SOURCES_SCHEMA: StructType = StructType([
     StructField(SourceColumns.CREATED_TS,     TimestampType(), nullable=False),
     StructField(SourceColumns.LAST_EDITED_TS, TimestampType(), nullable=False),
 ])
-"""Schema for the ``vox_populi_sources`` dimension table."""
+"""Schema for the ``wisdom_of_crowds.core.sources`` dimension table."""
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ def ensure_source_row(
     slug: str,
     cycle_ts: dt.datetime,
 ) -> None:
-    """Insert or update the ``vox_populi_sources`` row for ``slug``.
+    """Insert or update the ``wisdom_of_crowds.core.sources`` row for ``slug``.
 
     * First observation of a slug: row inserted with ``created_ts = cycle_ts``.
     * Later observations: ``last_edited_ts`` bumped to ``cycle_ts``,
@@ -147,7 +147,7 @@ def ensure_source_row(
         )],
         SOURCES_SCHEMA,
     )
-    updates.createOrReplaceTempView("_vox_populi_source_updates")
+    updates.createOrReplaceTempView("_wisdom_of_crowds_source_updates")
 
     # Table may not exist on first ever run — create it if missing.
     spark.sql(f"""
@@ -162,7 +162,7 @@ def ensure_source_row(
 
     spark.sql(f"""
         MERGE INTO {target} AS t
-        USING _vox_populi_source_updates AS s
+        USING _wisdom_of_crowds_source_updates AS s
         ON t.source_id = s.source_id
         WHEN MATCHED THEN UPDATE SET
             source          = s.source,

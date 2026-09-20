@@ -1,7 +1,7 @@
 """Gold-layer schema — the human-facing wisdom-of-crowds table.
 
 One row per (source_id, market_id, cycle_dt). Every row carries the
-integer ``source_id`` (FK into ``vox_populi_sources``) alongside the
+integer ``source_id`` (FK into ``wisdom_of_crowds.core.sources``) alongside the
 human-readable ``source`` slug, matching the silver shape. The table is
 partitioned by ``(cycle_dt, source_id)`` so parallel ingest agents can
 truncate-load their own partition without touching any other.
@@ -21,7 +21,7 @@ from pyspark.sql.types import (
 
 
 class GoldColumns:
-    SOURCE_ID              = "source_id"          # INT FK into vox_populi_sources
+    SOURCE_ID              = "source_id"          # INT FK into wisdom_of_crowds.core.sources
     SOURCE                 = "source"             # human/URL slug
     MARKET_ID              = "market_id"
     QUESTION               = "question"

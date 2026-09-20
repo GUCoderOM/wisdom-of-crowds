@@ -11,7 +11,7 @@ Called as a console script (``vox-ingest``) or as a Databricks task. It:
    :data:`~wisdom_of_crowds.schema.sources.SOURCE_CATALOG`) and ``cycle_dt``
    (derived from ``cycle_ts``) so it matches
    :data:`~wisdom_of_crowds.schema.silver.SILVER_SCHEMA`.
-5. Upserts the dimension row in ``vox_populi_sources``.
+5. Upserts the dimension row in ``wisdom_of_crowds.core.sources``.
 6. Writes silver, partitioned by ``(cycle_dt, source_id)``, with a
    ``replaceWhere`` that scopes the truncate-load to this run's partition
    only — so running the same source twice in one day is idempotent and

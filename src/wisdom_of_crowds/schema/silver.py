@@ -48,7 +48,7 @@ from pyspark.sql.types import (
 class SilverColumns:
     """Column-name constants for the silver table."""
 
-    SOURCE_ID         = "source_id"        # INT FK into vox_populi_sources
+    SOURCE_ID         = "source_id"        # INT FK into wisdom_of_crowds.core.sources
     SOURCE            = "source"           # human/URL slug
     MARKET_ID         = "market_id"
     QUESTION          = "question"

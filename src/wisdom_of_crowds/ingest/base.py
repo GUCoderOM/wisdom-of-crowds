@@ -8,7 +8,7 @@ or where silver lives — the runner handles all of that.
 Every subclass sets ``slug`` (a human/URL-friendly identifier). The runner
 looks up the integer ``source_id`` from
 :data:`~wisdom_of_crowds.schema.sources.SOURCE_CATALOG` at write time and
-foreign-keys every row to the ``vox_populi_sources`` dimension table.
+foreign-keys every row to the ``wisdom_of_crowds.core.sources`` dimension table.
 """
 
 from __future__ import annotations
