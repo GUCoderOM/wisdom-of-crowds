@@ -6,12 +6,14 @@
 # The market universe still comes from Polymarket's Gamma API — that
 # endpoint isn't rate-limited on the market-list side.
 
-limit_markets:    100         # top-N markets by 24h volume
+limit_markets:    50          # top-N markets by 24h volume
 min_trade_count:  5           # skip markets with negligible activity on Gamma
 include_closed:   false       # unresolved markets only by default
 
-# How far back to fetch trades. Dune reads are billed per row, so keep
-# this tight for daily ingest. 365 days = full annual view.
+# How far back to fetch trades. Dune bills per datapoint (rows × cols),
+# so the SELECT is deliberately narrow — we drop the fields we can
+# derive from Gamma (question) or don't use (shares, unique_key,
+# is_taker_side) to fit inside the plan's per-cycle datapoint quota.
 lookback_days:    365
 
 # DUNE_API_KEY must be present at run time either in cfg.params

@@ -291,18 +291,16 @@ class PolymarketSource(Source):
         qtype = (
             QuestionType.BINARY if len(outcomes) == 2 else QuestionType.CATEGORICAL
         )
-        question = market.get("question") or trade.get("question") or f"polymarket:{cid}"
-
-        # The trader is the taker when is_taker_side, else the maker.
-        is_taker = bool(trade.get("is_taker_side"))
-        trader = trade.get("taker") if is_taker else trade.get("maker")
+        # ``question`` is pulled from Gamma metadata since the trades
+        # SELECT drops that column to save datapoints.
+        question = market.get("question") or f"polymarket:{cid}"
 
         rows.append((
             self.slug,
             cid,
             question,
             qtype,
-            trader,                                     # name
+            trade.get("trader"),                        # name — coalesce(taker, maker) in SQL
             _f(trade.get("price")),                     # answer_value
             trade.get("token_outcome"),                 # answer_outcome
             _f(trade.get("amount")),                    # weight
@@ -319,17 +317,25 @@ class PolymarketSource(Source):
 def _build_trades_sql(condition_ids: list[str], lookback_days: int | None) -> str:
     """Build the trades SELECT for a batch of condition IDs.
 
-    ``polymarket_polygon.market_trades.condition_id`` is ``varbinary`` on
-    Dune, not a string — Trino refuses ``varchar`` literals against a
-    ``varbinary`` column. Wrapping each id in ``from_hex('...')`` (with
-    the ``0x`` prefix stripped) coerces cleanly."""
+    Two design choices Dune-side:
+
+    * ``polymarket_polygon.market_trades.condition_id`` is ``varbinary``
+      on Dune (Trino). Trino refuses ``varchar`` literals against a
+      ``varbinary`` column, so each id is wrapped in ``from_hex('...')``
+      with the ``0x`` prefix stripped.
+    * Dune bills per *datapoint* (rows × columns). Only the six columns
+      the source actually populates in ``answers`` are selected —
+      ``question`` comes from Gamma metadata already, and ``shares`` /
+      ``unique_key`` / ``is_taker_side`` aren't used downstream. This
+      cuts the datapoint cost roughly in half versus SELECT *.
+    """
     hex_ids = ",".join(f"from_hex('{cid.removeprefix('0x')}')" for cid in condition_ids)
     time_clause = ""
     if lookback_days is not None:
         time_clause = f"\n  AND block_time > NOW() - INTERVAL '{int(lookback_days)}' DAY"
     return (
-        "SELECT condition_id, question, token_outcome, price, amount, shares, "
-        "maker, taker, is_taker_side, block_time, unique_key\n"
+        "SELECT condition_id, token_outcome, price, amount, "
+        "coalesce(taker, maker) AS trader, block_time\n"
         "FROM polymarket_polygon.market_trades\n"
         f"WHERE condition_id IN ({hex_ids}){time_clause}\n"
         "ORDER BY block_time DESC"
