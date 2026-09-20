@@ -184,10 +184,11 @@ def _write(
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Wisdom-of-crowds generic ingest runner.")
-    # `--source-id` is retained as the flag name for CLI backwards-compat,
-    # but its value is the slug (not the integer PK).
-    p.add_argument("--source-id",     required=True, help="Source slug (e.g. 'spf'). CLI legacy name.")
-    p.add_argument("--source-slug",   default=None,  help="Alias for --source-id (preferred).")
+    # `--source-slug` is the preferred name; `--source-id` is a legacy alias
+    # from before we introduced the integer PK. Either satisfies the slug
+    # requirement — validated after parse.
+    p.add_argument("--source-slug",   default=None,  help="Source slug (e.g. 'spf').")
+    p.add_argument("--source-id",     default=None,  help="Alias for --source-slug (legacy).")
     p.add_argument("--silver-output", required=True, help="Delta table name or Parquet directory.")
     p.add_argument("--sources-output", default=None, help="Dimension table name; default derived.")
     p.add_argument("--config-path",   default=None,  help="Optional YAML config override.")
@@ -196,8 +197,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
     slug = args.source_slug or args.source_id
+    if not slug:
+        parser.error("one of --source-slug or --source-id is required")
     spark = SparkSession.builder.appName(f"vox-ingest-{slug}").getOrCreate()
     run(spark, IngestJobConfig(
         source_slug=slug,
