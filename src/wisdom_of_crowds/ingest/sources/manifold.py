@@ -273,6 +273,12 @@ class ManifoldSource(Source):
                         "market_id": mid, "err": repr(exc),
                     })
                     ans = []
+            # Filter out already-resolved sub-answers. Manifold pins their
+            # probability at 1.0 or 0.0 once resolved, which the categorical
+            # strategy would otherwise report as the crowd's forecast — a
+            # settled fact masquerading as a prediction. Answers with a
+            # non-null ``resolution`` field are what we skip.
+            ans = [a for a in ans if not a.get("resolution")]
             outcomes       = [str(a.get("text")) for a in ans]
             prices         = [_f(a.get("probability")) or 0.0 for a in ans]
         elif qtype == _PSEUDO_NUM:

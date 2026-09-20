@@ -67,16 +67,18 @@ def run(spark: SparkSession, cfg: IngestJobConfig) -> int:
     meta      = get_meta(cfg.source_slug)
     cycle_dt  = cycle_ts.date()
 
-    # Upsert dimension row FIRST so the FK integrity holds even if a reader
-    # peeks at silver before the writer commits.
-    sources_target = cfg.sources_output or _derive_sources_target(cfg.silver_output)
-    ensure_source_row(spark, sources_target, cfg.source_slug, cycle_ts)
-
-    # Source produces INGEST_SCHEMA rows; runner enriches to SILVER_SCHEMA.
+    # Extract FIRST — if it raises, we don't want the dimension table's
+    # last_edited_ts to advance for a source that produced nothing this
+    # cycle. The dimension row means "we have data for this source at
+    # this ts", not "we tried to run this source".
     ingested: DataFrame = source.extract(spark, src_cfg)
     silver: DataFrame = _enrich(ingested, source_id=meta.source_id, cycle_dt=cycle_dt)
 
     _write(silver, cfg.silver_output, source_id=meta.source_id, cycle_dt=cycle_dt)
+
+    # Only after silver is committed do we advance the dimension row.
+    sources_target = cfg.sources_output or _derive_sources_target(cfg.silver_output)
+    ensure_source_row(spark, sources_target, cfg.source_slug, cycle_ts)
 
     n = silver.count()
     _log.info("ingest_complete", extra={

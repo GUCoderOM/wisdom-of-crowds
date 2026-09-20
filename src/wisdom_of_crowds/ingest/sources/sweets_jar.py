@@ -8,6 +8,8 @@ pipeline as any other source.
 
 from __future__ import annotations
 
+import pathlib
+
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
@@ -25,7 +27,7 @@ class SweetsJarSource(Source):
     ])
 
     def extract(self, spark: SparkSession, cfg: SourceConfig) -> DataFrame:
-        input_path = cfg.params["input_path"]
+        input_path = self._resolve_input_path(cfg.params["input_path"])
         question   = cfg.params.get("question", "How many sweets are in the jar?")
         market_id  = cfg.params.get("market_id", "sweets-jar-original")
         resolved   = cfg.params.get("resolved_value")  # optional
@@ -54,3 +56,28 @@ class SweetsJarSource(Source):
             F.lit(resolved).cast("double").alias(SilverColumns.RESOLVED_VALUE),
             F.lit(cfg.cycle_ts).cast("timestamp").alias(SilverColumns.CYCLE_TS),
         )
+
+    @staticmethod
+    def _resolve_input_path(raw_path: str) -> str:
+        """Resolve a possibly-relative ``input_path`` against the packaged
+        wheel data (``_data/`` sibling of ``_config/``, force-included by
+        ``pyproject.toml``) or the repo checkout, whichever is first.
+
+        Databricks Spark rejects relative paths outright, so this
+        deterministically upgrades e.g. ``data/sweets-jar-guesses.csv``
+        into an absolute filesystem path. Absolute paths are returned
+        untouched.
+        """
+        p = pathlib.Path(raw_path)
+        if p.is_absolute():
+            return str(p)
+
+        here = pathlib.Path(__file__).resolve()
+        for parent in [here.parent, *here.parents]:
+            for prefix in ("data", "_data"):
+                candidate = parent / prefix / p.name
+                if candidate.is_file():
+                    return f"file://{candidate}"
+        # Last resort — return as-is so the caller sees the original
+        # error rather than a silently-mangled path.
+        return raw_path

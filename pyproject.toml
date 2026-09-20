@@ -52,6 +52,7 @@ packages = ["src/wisdom_of_crowds"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "config" = "wisdom_of_crowds/_config"   # ships config/ inside the wheel
+"data"   = "wisdom_of_crowds/_data"     # ships bundled datasets (e.g. sweets-jar CSV)
 
 [tool.ruff]
 line-length    = 100
