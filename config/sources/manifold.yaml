@@ -1,0 +1,12 @@
+# Parameters for the Manifold Markets ingestion source.
+
+limit_markets:          200      # top-N most recently updated markets
+limit_bets_per_market:  1000     # bets per market (Manifold caps at 1000/req)
+min_bet_count:          10       # skip markets with too few traders
+sort:                   updated-time
+include_resolved:       false    # only live markets by default
+
+# Where to put the raw per-bet fidelity table. When ingesting to a Delta
+# lake, set this to a catalog.schema.table. When ingesting locally, leave
+# null and the runner writes a Parquet directory alongside silver.
+bets_output:            vox_populi.core.manifold_bets

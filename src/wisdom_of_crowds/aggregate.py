@@ -3,6 +3,10 @@
 Runs identically locally (against a Parquet silver table) and on Databricks
 (against a Delta silver table). The only difference is the ``spark`` session
 and the path/table used for I/O.
+
+Gold is partitioned by ``(cycle_dt, source_id)`` — the same partition
+scheme as silver — so parallel ingest+aggregate runs of different sources
+never touch each other's gold partitions.
 """
 
 from __future__ import annotations
@@ -29,17 +33,19 @@ class AggregateJobConfig:
     silver_source:  str          # a table name (``cat.sch.tab``) or a path
     gold_output:    str          # a Delta table name or a Parquet directory
     cycle_dt:       dt.date      # partition key for this run
+    source_id:      int | None = None  # if set, aggregate only this source's slice
 
 
 def run(spark: SparkSession, cfg: AggregateJobConfig) -> DataFrame:
     """Read silver, apply the correct strategy per row, write gold, return
     the gold DataFrame for verification."""
-    silver = _read(spark, cfg.silver_source)
+    silver = _read(spark, cfg.silver_source, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
     gold = build_gold(silver, cfg.cycle_dt)
-    _write(gold, cfg.gold_output, cfg.cycle_dt)
+    _write(gold, cfg.gold_output, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
     _log.info("aggregate_complete", extra={
         "rows_written": gold.count(),
         "cycle_dt": cfg.cycle_dt.isoformat(),
+        "source_id": cfg.source_id,
         "gold_output": cfg.gold_output,
     })
     return gold
@@ -50,10 +56,9 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
 
     Dispatches on ``question_type``: each strategy contributes a struct
     ``(wisdom, wisdom_outcome, guesses_count)``; we then compute the error
-    columns and assemble the final gold shape.
+    columns and assemble the final gold shape (which now carries
+    ``source_id`` alongside the ``source`` slug).
     """
-    # Build a single ``result`` column via nested ``when`` clauses so all
-    # strategies run in one pass over silver.
     when_chain = None
     for qtype, strategy in STRATEGY_REGISTRY.items():
         expr = strategy()
@@ -62,12 +67,13 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
             if when_chain is None
             else when_chain.when(F.col(SilverColumns.QUESTION_TYPE) == qtype, expr)
         )
-    result = when_chain  # None only if the registry is empty, which is a bug.
+    result = when_chain
     assert result is not None, "STRATEGY_REGISTRY is empty"
 
     projected = silver.withColumn("_result", result)
 
     gold = projected.select(
+        F.col(SilverColumns.SOURCE_ID).alias(GoldColumns.SOURCE_ID),
         F.col(SilverColumns.SOURCE).alias(GoldColumns.SOURCE),
         F.col(SilverColumns.MARKET_ID).alias(GoldColumns.MARKET_ID),
         F.col(SilverColumns.QUESTION).alias(GoldColumns.QUESTION),
@@ -95,25 +101,53 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
 
 
 def _is_table_name(target: str) -> bool:
-    """``catalog.schema.table`` looks like a table; anything with a slash or
-    starting with ``/`` is a filesystem path."""
     return ("/" not in target) and (target.count(".") >= 1)
 
 
-def _read(spark: SparkSession, source: str) -> DataFrame:
-    if _is_table_name(source):
-        return spark.read.table(source)
-    # Filesystem path — Parquet directory.
-    return spark.read.parquet(source)
+def _read(
+    spark: SparkSession,
+    source: str,
+    *,
+    cycle_dt: dt.date,
+    source_id: int | None,
+) -> DataFrame:
+    """Read silver, scoped down to the partition(s) being aggregated so a
+    single-source aggregate doesn't scan the entire history."""
+    df = spark.read.table(source) if _is_table_name(source) else spark.read.parquet(source)
+    df = df.filter(F.col(SilverColumns.CYCLE_DT) == F.lit(cycle_dt).cast("date"))
+    if source_id is not None:
+        df = df.filter(F.col(SilverColumns.SOURCE_ID) == source_id)
+    return df
 
 
-def _write(df: DataFrame, target: str, cycle_dt: dt.date) -> None:
+def _write(
+    df: DataFrame,
+    target: str,
+    *,
+    cycle_dt: dt.date,
+    source_id: int | None,
+) -> None:
+    """Write gold with the same ``(cycle_dt, source_id)`` partition scheme
+    as silver. When ``source_id`` is provided, ``replaceWhere`` scopes the
+    overwrite so parallel aggregates for different sources on the same day
+    don't clobber each other."""
+    if source_id is not None:
+        replace_where = (
+            f"cycle_dt = date'{cycle_dt.isoformat()}' AND source_id = {source_id}"
+        )
+    else:
+        replace_where = f"cycle_dt = date'{cycle_dt.isoformat()}'"
+
     if _is_table_name(target):
         (
             df.write.format("delta").mode("overwrite")
-              .option("replaceWhere", f"cycle_dt = date'{cycle_dt.isoformat()}'")
-              .partitionBy(GoldColumns.CYCLE_DT)
+              .option("replaceWhere", replace_where)
+              .partitionBy(GoldColumns.CYCLE_DT, GoldColumns.SOURCE_ID)
               .saveAsTable(target)
         )
     else:
-        (df.write.mode("overwrite").partitionBy(GoldColumns.CYCLE_DT).parquet(target))
+        (
+            df.write.mode("overwrite")
+              .partitionBy(GoldColumns.CYCLE_DT, GoldColumns.SOURCE_ID)
+              .parquet(target)
+        )

@@ -19,6 +19,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Gold Delta table name or Parquet directory to write to.")
     p.add_argument("--cycle-dt",      default=None,
                    help="ISO date for this cycle (YYYY-MM-DD). Default: today (UTC).")
+    p.add_argument("--source-slug",   default=None,
+                   help="If set, aggregate only this source's (cycle_dt, source_id) partition.")
     return p
 
 
@@ -30,11 +32,16 @@ def main(argv: list[str] | None = None) -> None:
         dt.date.fromisoformat(args.cycle_dt)
         if args.cycle_dt else dt.datetime.now(dt.timezone.utc).date()
     )
+    source_id: int | None = None
+    if args.source_slug:
+        from wisdom_of_crowds.schema.sources import get_meta
+        source_id = get_meta(args.source_slug).source_id
     spark = SparkSession.builder.appName("vox-aggregate").getOrCreate()
     run(spark, AggregateJobConfig(
         silver_source=args.silver_source,
         gold_output=args.gold_output,
         cycle_dt=cycle_dt,
+        source_id=source_id,
     ))
 
 

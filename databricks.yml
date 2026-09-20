@@ -1,32 +1,43 @@
 # Databricks Asset Bundle for the vox-populi wisdom-of-crowds pipeline.
 #
-# `databricks bundle deploy` builds the wheel via the artifact below,
-# uploads it and the source to the workspace, and creates the job. Then
-# `databricks bundle run vox_populi` triggers a run.
-#
-# Naming: the job is called *vox_populi* — Galton's own phrase for the
-# crowd's answer. Every ingestion + aggregation run of this pipeline
-# lives under this single Job in the Databricks Workflows UI.
+# Everest/DAB style: one job, one parameterised task. Run parameters
+# choose which transformation runs (`phase = ingest | aggregate |
+# end_to_end`) and against which source (`source_slug`). Parallel agents
+# can trigger their own runs with different parameter combinations without
+# stepping on each other, thanks to composite (cycle_dt, source_id)
+# partitioning on the silver + gold Delta tables.
 
 bundle:
   name: vox-populi
 
 variables:
+  catalog:
+    description: Unity catalog for all vox-populi tables.
+    default:     vox_populi
+  schema:
+    description: Schema within the catalog holding vox-populi tables.
+    default:     core
   silver_table:
     description: Fully-qualified silver Delta table.
-    default:     workspace.default.vox_populi_silver
+    default:     ${var.catalog}.${var.schema}.silver
   gold_table:
     description: Fully-qualified gold Delta table.
-    default:     workspace.default.vox_populi_gold
-  default_source_id:
+    default:     ${var.catalog}.${var.schema}.gold
+  sources_table:
+    description: Fully-qualified source dimension table.
+    default:     ${var.catalog}.${var.schema}.sources
+  default_phase:
+    description: Which transformation phase runs by default.
+    default:     end_to_end
+  default_source_slug:
     description: Which source the pipeline pulls by default.
     default:     spf
   wheel_path:
     description: >
-      Workspace path of the uploaded wheel. The tasks pip-install this
+      Workspace path of the uploaded wheel. The task pip-installs this
       in-notebook; a non-empty serverless `dependencies` list restarts the
       Python REPL underneath a running notebook.
-    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.2.0-py3-none-any.whl
+    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.3.0-py3-none-any.whl
 
 targets:
   dev:
@@ -46,38 +57,35 @@ resources:
     vox_populi:
       name: vox_populi
       description: >
-        Wisdom-of-crowds data pipeline. Ingests one source per run into
-        silver, then aggregates all silver rows into gold. Add more
-        sources by dropping a Source subclass in
+        Wisdom-of-crowds data pipeline. One parameterised task; run
+        parameters pick the phase (ingest / aggregate / end_to_end) and
+        source. Add a new source by dropping a Source subclass in
         src/wisdom_of_crowds/ingest/sources/ and a YAML config in
-        config/sources/.
+        config/sources/, then triggering a run with source_slug=<slug>.
       tags:
         project: wisdom-of-crowds
         owner:   yousufalabdullatif@gmail.com
 
       parameters:
-        - name:    source_id
-          default: ${var.default_source_id}
+        - name:    phase
+          default: ${var.default_phase}
+        - name:    source_slug
+          default: ${var.default_source_slug}
         - name:    silver_table
           default: ${var.silver_table}
         - name:    gold_table
           default: ${var.gold_table}
+        - name:    sources_table
+          default: ${var.sources_table}
 
       tasks:
-        - task_key: ingest
+        - task_key: vox_populi
           notebook_task:
-            notebook_path: ./databricks_tasks/ingest_task.py
+            notebook_path: ./databricks_tasks/vox_populi_task.py
             base_parameters:
-              source_id:    "{{job.parameters.source_id}}"
-              silver_table: "{{job.parameters.silver_table}}"
-              wheel_path:   ${var.wheel_path}
-
-        - task_key: aggregate
-          depends_on:
-            - task_key: ingest
-          notebook_task:
-            notebook_path: ./databricks_tasks/aggregate_task.py
-            base_parameters:
-              silver_table: "{{job.parameters.silver_table}}"
-              gold_table:   "{{job.parameters.gold_table}}"
-              wheel_path:   ${var.wheel_path}
+              phase:         "{{job.parameters.phase}}"
+              source_slug:   "{{job.parameters.source_slug}}"
+              silver_table:  "{{job.parameters.silver_table}}"
+              gold_table:    "{{job.parameters.gold_table}}"
+              sources_table: "{{job.parameters.sources_table}}"
+              wheel_path:    ${var.wheel_path}

@@ -5,4 +5,4 @@ Reference:
     Galton, F. (1907). One Vote, One Value. Nature 75: 414.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

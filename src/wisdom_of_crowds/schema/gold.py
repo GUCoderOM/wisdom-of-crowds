@@ -1,8 +1,10 @@
 """Gold-layer schema — the human-facing wisdom-of-crowds table.
 
-One row per (source, market_id, cycle_dt). This is what your final analytics
-join against. It carries what the crowd said and — when a source has ground
-truth — how far off it was.
+One row per (source_id, market_id, cycle_dt). Every row carries the
+integer ``source_id`` (FK into ``vox_populi_sources``) alongside the
+human-readable ``source`` slug, matching the silver shape. The table is
+partitioned by ``(cycle_dt, source_id)`` so parallel ingest agents can
+truncate-load their own partition without touching any other.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from pyspark.sql.types import (
     DateType,
     DoubleType,
+    IntegerType,
     LongType,
     StringType,
     StructField,
@@ -18,7 +21,8 @@ from pyspark.sql.types import (
 
 
 class GoldColumns:
-    SOURCE                 = "source"
+    SOURCE_ID              = "source_id"          # INT FK into vox_populi_sources
+    SOURCE                 = "source"             # human/URL slug
     MARKET_ID              = "market_id"
     QUESTION               = "question"
     QUESTION_TYPE          = "question_type"
@@ -32,15 +36,16 @@ class GoldColumns:
 
 
 GOLD_SCHEMA: StructType = StructType([
-    StructField(GoldColumns.SOURCE,               StringType(), nullable=False),
-    StructField(GoldColumns.MARKET_ID,            StringType(), nullable=False),
-    StructField(GoldColumns.QUESTION,             StringType(), nullable=False),
-    StructField(GoldColumns.QUESTION_TYPE,        StringType(), nullable=False),
-    StructField(GoldColumns.WISDOM,               DoubleType(), nullable=False),
-    StructField(GoldColumns.WISDOM_OUTCOME,       StringType(), nullable=True),
-    StructField(GoldColumns.GUESSES,              LongType(),   nullable=False),
-    StructField(GoldColumns.RESOLVED_VALUE,       DoubleType(), nullable=True),
-    StructField(GoldColumns.SIGNED_ERROR,         DoubleType(), nullable=True),
-    StructField(GoldColumns.SIGNED_PERCENT_ERROR, DoubleType(), nullable=True),
-    StructField(GoldColumns.CYCLE_DT,             DateType(),   nullable=False),
+    StructField(GoldColumns.SOURCE_ID,            IntegerType(), nullable=False),
+    StructField(GoldColumns.SOURCE,               StringType(),  nullable=False),
+    StructField(GoldColumns.MARKET_ID,            StringType(),  nullable=False),
+    StructField(GoldColumns.QUESTION,             StringType(),  nullable=False),
+    StructField(GoldColumns.QUESTION_TYPE,        StringType(),  nullable=False),
+    StructField(GoldColumns.WISDOM,               DoubleType(),  nullable=False),
+    StructField(GoldColumns.WISDOM_OUTCOME,       StringType(),  nullable=True),
+    StructField(GoldColumns.GUESSES,              LongType(),    nullable=False),
+    StructField(GoldColumns.RESOLVED_VALUE,       DoubleType(),  nullable=True),
+    StructField(GoldColumns.SIGNED_ERROR,         DoubleType(),  nullable=True),
+    StructField(GoldColumns.SIGNED_PERCENT_ERROR, DoubleType(),  nullable=True),
+    StructField(GoldColumns.CYCLE_DT,             DateType(),    nullable=False),
 ])

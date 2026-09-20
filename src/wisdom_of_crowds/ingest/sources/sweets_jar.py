@@ -13,11 +13,11 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.silver import SILVER_SCHEMA, QuestionType, SilverColumns
+from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType, SilverColumns
 
 
 class SweetsJarSource(Source):
-    source_id = "sweets_jar"
+    slug = "sweets_jar"
 
     _CSV_SCHEMA = StructType([
         StructField("name",  StringType(),  nullable=False),
@@ -39,13 +39,13 @@ class SweetsJarSource(Source):
         guesses = raw.agg(F.collect_list(F.col("guess").cast("double")).alias("guesses"))
 
         return guesses.select(
-            F.lit(self.source_id).alias(SilverColumns.SOURCE),
+            F.lit(self.slug).alias(SilverColumns.SOURCE),
             F.lit(market_id).alias(SilverColumns.MARKET_ID),
             F.lit(question).alias(SilverColumns.QUESTION),
             F.lit(QuestionType.NUMERIC_GUESSES).alias(SilverColumns.QUESTION_TYPE),
             F.col("guesses").alias(SilverColumns.GUESSES),
-            F.lit(None).cast(SILVER_SCHEMA[SilverColumns.OUTCOMES].dataType).alias(SilverColumns.OUTCOMES),
-            F.lit(None).cast(SILVER_SCHEMA[SilverColumns.PRICES].dataType).alias(SilverColumns.PRICES),
+            F.lit(None).cast(INGEST_SCHEMA[SilverColumns.OUTCOMES].dataType).alias(SilverColumns.OUTCOMES),
+            F.lit(None).cast(INGEST_SCHEMA[SilverColumns.PRICES].dataType).alias(SilverColumns.PRICES),
             F.lit(None).cast("long").alias(SilverColumns.TRADER_COUNT),
             F.lit(None).cast("double").alias(SilverColumns.VOLUME_USD),
             F.lit(None).cast("timestamp").alias(SilverColumns.END_DATE),

@@ -31,7 +31,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.silver import SILVER_SCHEMA, QuestionType, SilverColumns
+from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType, SilverColumns
 
 _log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ _DEFAULT_URL = (
 
 
 class SPFSource(Source):
-    source_id = "spf"
+    slug = "spf"
 
     def extract(self, spark: SparkSession, cfg: SourceConfig) -> DataFrame:
         url         = cfg.params.get("url", _DEFAULT_URL)
@@ -57,9 +57,9 @@ class SPFSource(Source):
         if not rows:
             # Empty batch is legal; caller sees zero-row DataFrame with the
             # correct schema, silver stays consistent.
-            return spark.createDataFrame([], SILVER_SCHEMA)
+            return spark.createDataFrame([], INGEST_SCHEMA)
 
-        return spark.createDataFrame(rows, SILVER_SCHEMA)
+        return spark.createDataFrame(rows, INGEST_SCHEMA)
 
     # ------------------------------------------------------------------
     # helpers
@@ -114,7 +114,7 @@ class SPFSource(Source):
                     )
 
                     yield (
-                        SPFSource.source_id,   # source
+                        SPFSource.slug,        # source
                         market_id,             # market_id
                         question,              # question
                         QuestionType.NUMERIC_GUESSES,  # question_type
