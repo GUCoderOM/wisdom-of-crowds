@@ -1,159 +1,113 @@
-"""The generic aggregator — reads silver, applies strategies, writes gold.
+"""Aggregate ``answers`` (one row per individual guess) into ``wisdom``
+(one row per market/question with the crowd's verdict).
 
-Runs identically locally (against a Parquet silver table) and on Databricks
-(against a Delta silver table). The only difference is the ``spark`` session
-and the path/table used for I/O.
+Runs identically locally (Parquet) and on Databricks (Delta). All
+partition filtering (by ``cycle_dt`` and optionally ``source_id``) is
+applied by the framework before the DataFrame arrives here.
 
-Gold is partitioned by ``(cycle_dt, source_id)`` — the same partition
-scheme as silver — so parallel ingest+aggregate runs of different sources
-never touch each other's gold partitions.
+Aggregation per ``question_type``:
+
+* **numeric_guesses** — wisdom = median of ``answer_value``.
+* **binary / categorical / poll_categorical** — wisdom = mode-share
+  (the fraction of the crowd that chose the modal outcome), and
+  ``wisdom_outcome`` = the modal outcome itself. Same formula for two
+  outcomes and N outcomes; when a market has no answers, both columns
+  are ``NULL`` and the row still lands in ``wisdom`` (queryable
+  data-quality signal).
+
+``guesses`` on the wisdom row is always ``COUNT(*)`` of the individual
+answers that produced it — anonymous rows count, ``name = NULL`` is
+fine.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import logging
-from dataclasses import dataclass
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
+from wisdom_of_crowds.schema.answers import AnswerColumns, QuestionType
 from wisdom_of_crowds.schema.wisdom import WisdomColumns
-from wisdom_of_crowds.schema.guesses import GuessColumns
-from wisdom_of_crowds.strategies import STRATEGY_REGISTRY
-
-_log = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class AggregateJobConfig:
-    """Runtime parameters for :func:`run`. Passed as CLI args or notebook
-    widgets, resolved via the same convention we use elsewhere."""
-
-    guesses_source:  str          # a table name (``cat.sch.tab``) or a path
-    wisdom_output:    str          # a Delta table name or a Parquet directory
-    cycle_dt:       dt.date      # partition key for this run
-    source_id:      int | None = None  # if set, aggregate only this source's slice
+_GROUP_KEYS = [
+    AnswerColumns.SOURCE_ID,
+    AnswerColumns.SOURCE,
+    AnswerColumns.MARKET_ID,
+    AnswerColumns.QUESTION,
+    AnswerColumns.QUESTION_TYPE,
+]
 
 
-def run(spark: SparkSession, cfg: AggregateJobConfig) -> DataFrame:
-    """Read silver, apply the correct strategy per row, write gold, return
-    the gold DataFrame for verification."""
-    silver = _read(spark, cfg.guesses_source, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
-    gold = build_gold(silver, cfg.cycle_dt)
-    _write(gold, cfg.wisdom_output, cycle_dt=cfg.cycle_dt, source_id=cfg.source_id)
-    _log.info("aggregate_complete", extra={
-        "rows_written": gold.count(),
-        "cycle_dt": cfg.cycle_dt.isoformat(),
-        "source_id": cfg.source_id,
-        "wisdom_output": cfg.wisdom_output,
-    })
-    return gold
+def build_wisdom(answers: DataFrame, cycle_dt: dt.date) -> DataFrame:
+    """Pure GROUP BY over ``answers`` -> wisdom rows.
 
-
-def build_gold(guesses: DataFrame, cycle_dt: dt.date) -> DataFrame:
-    """Compute gold rows from silver — pure function, no I/O.
-
-    Dispatches on ``question_type``: each strategy contributes a struct
-    ``(wisdom, wisdom_outcome, guesses_count)``; we then compute the error
-    columns and assemble the final gold shape (which now carries
-    ``source_id`` alongside the ``source`` slug).
+    Assumes ``answers`` is already scoped to a single ``cycle_dt`` (the
+    framework does that filter). Returns one row per market/question.
     """
-    when_chain = None
-    for qtype, strategy in STRATEGY_REGISTRY.items():
-        expr = strategy()
-        when_chain = (
-            F.when(F.col(GuessColumns.QUESTION_TYPE) == qtype, expr)
-            if when_chain is None
-            else when_chain.when(F.col(GuessColumns.QUESTION_TYPE) == qtype, expr)
-        )
-    result = when_chain
-    assert result is not None, "STRATEGY_REGISTRY is empty"
+    # Step 1 — per-market aggregates that don't need the modal outcome
+    # (median + count + a preliminary mode).
+    grouped = answers.groupBy(*_GROUP_KEYS).agg(
+        F.count(F.lit(1)).alias("_count"),
+        F.percentile_approx(F.col(AnswerColumns.ANSWER_VALUE), 0.5).alias("_median_value"),
+        F.mode(F.col(AnswerColumns.ANSWER_OUTCOME)).alias("_mode_outcome"),
+    )
 
-    projected = guesses.withColumn("_result", result)
+    # Step 2 — for market question types, compute the mode's share of
+    # the total answer count. Two passes are needed because "share of
+    # the mode" depends on which outcome IS the mode, and Spark's
+    # aggregation can't refer to another aggregate mid-groupBy.
+    mode_share = (
+        answers.alias("a")
+               .join(
+                   grouped.select(
+                       AnswerColumns.SOURCE_ID,
+                       AnswerColumns.MARKET_ID,
+                       "_mode_outcome",
+                   ).alias("m"),
+                   on=[AnswerColumns.SOURCE_ID, AnswerColumns.MARKET_ID],
+                   how="inner",
+               )
+               .groupBy(AnswerColumns.SOURCE_ID, AnswerColumns.MARKET_ID)
+               .agg(
+                   (
+                       F.sum(
+                           F.when(
+                               F.col(f"a.{AnswerColumns.ANSWER_OUTCOME}")
+                               == F.col("_mode_outcome"),
+                               F.lit(1.0),
+                           ).otherwise(F.lit(0.0)),
+                       )
+                       / F.count(F.lit(1))
+                   ).alias("_mode_share"),
+               )
+    )
 
-    gold = projected.select(
-        F.col(GuessColumns.SOURCE_ID).alias(WisdomColumns.SOURCE_ID),
-        F.col(GuessColumns.SOURCE).alias(WisdomColumns.SOURCE),
-        F.col(GuessColumns.MARKET_ID).alias(WisdomColumns.MARKET_ID),
-        F.col(GuessColumns.QUESTION).alias(WisdomColumns.QUESTION),
-        F.col(GuessColumns.QUESTION_TYPE).alias(WisdomColumns.QUESTION_TYPE),
-        F.col("_result.wisdom").alias(WisdomColumns.WISDOM),
-        F.col("_result.wisdom_outcome").alias(WisdomColumns.WISDOM_OUTCOME),
-        F.col("_result.guesses_count").alias(WisdomColumns.GUESSES),
-        F.col(GuessColumns.RESOLVED_VALUE).alias(WisdomColumns.RESOLVED_VALUE),
-        (F.col("_result.wisdom") - F.col(GuessColumns.RESOLVED_VALUE))
-            .alias(WisdomColumns.SIGNED_ERROR),
-        F.when(
-            F.col(GuessColumns.RESOLVED_VALUE).isNotNull() &
-            (F.col(GuessColumns.RESOLVED_VALUE) != 0),
-            100.0 * (F.col("_result.wisdom") - F.col(GuessColumns.RESOLVED_VALUE))
-                  / F.col(GuessColumns.RESOLVED_VALUE),
-        ).alias(WisdomColumns.SIGNED_PERCENT_ERROR),
+    combined = grouped.join(
+        mode_share,
+        on=[AnswerColumns.SOURCE_ID, AnswerColumns.MARKET_ID],
+        how="left",
+    )
+
+    # Step 3 — pick wisdom + wisdom_outcome per question_type.
+    is_numeric = F.col(AnswerColumns.QUESTION_TYPE) == F.lit(QuestionType.NUMERIC_GUESSES)
+
+    return combined.select(
+        F.col(AnswerColumns.SOURCE_ID).alias(WisdomColumns.SOURCE_ID),
+        F.col(AnswerColumns.SOURCE).alias(WisdomColumns.SOURCE),
+        F.col(AnswerColumns.MARKET_ID).alias(WisdomColumns.MARKET_ID),
+        F.col(AnswerColumns.QUESTION).alias(WisdomColumns.QUESTION),
+        F.col(AnswerColumns.QUESTION_TYPE).alias(WisdomColumns.QUESTION_TYPE),
+        F.when(is_numeric, F.col("_median_value"))
+         .otherwise(F.col("_mode_share"))
+         .alias(WisdomColumns.WISDOM),
+        F.when(is_numeric, F.lit(None).cast("string"))
+         .otherwise(F.col("_mode_outcome"))
+         .alias(WisdomColumns.WISDOM_OUTCOME),
+        F.col("_count").cast("long").alias(WisdomColumns.GUESSES),
+        F.lit(None).cast("double").alias(WisdomColumns.RESOLVED_VALUE),
+        F.lit(None).cast("double").alias(WisdomColumns.SIGNED_ERROR),
+        F.lit(None).cast("double").alias(WisdomColumns.SIGNED_PERCENT_ERROR),
         F.lit(cycle_dt).cast("date").alias(WisdomColumns.CYCLE_DT),
     )
-    # Contract: gold and silver stay 1:1 per (source_id, market_id,
-    # cycle_dt). Rows where the strategy couldn't compute a wisdom
-    # (e.g. a categorical market with an empty answers array) keep a
-    # NULL wisdom in gold — that null is a queryable data-quality
-    # signal, not a hidden failure. Downstream analytics filter
-    # ``wisdom IS NOT NULL`` when they want only the answered rows.
-    return gold
-
-
-# ---------------------------------------------------------------------------
-# I/O helpers — table vs path, Delta vs Parquet, resolved from a single string
-# ---------------------------------------------------------------------------
-
-
-def _is_table_name(target: str) -> bool:
-    return ("/" not in target) and (target.count(".") >= 1)
-
-
-def _read(
-    spark: SparkSession,
-    source: str,
-    *,
-    cycle_dt: dt.date,
-    source_id: int | None,
-) -> DataFrame:
-    """Read silver, scoped down to the partition(s) being aggregated so a
-    single-source aggregate doesn't scan the entire history."""
-    df = spark.read.table(source) if _is_table_name(source) else spark.read.parquet(source)
-    df = df.filter(F.col(GuessColumns.CYCLE_DT) == F.lit(cycle_dt).cast("date"))
-    if source_id is not None:
-        df = df.filter(F.col(GuessColumns.SOURCE_ID) == source_id)
-    return df
-
-
-def _write(
-    df: DataFrame,
-    target: str,
-    *,
-    cycle_dt: dt.date,
-    source_id: int | None,
-) -> None:
-    """Write gold with the same ``(cycle_dt, source_id)`` partition scheme
-    as silver. When ``source_id`` is provided, ``replaceWhere`` scopes the
-    overwrite so parallel aggregates for different sources on the same day
-    don't clobber each other."""
-    if source_id is not None:
-        replace_where = (
-            f"cycle_dt = date'{cycle_dt.isoformat()}' AND source_id = {source_id}"
-        )
-    else:
-        replace_where = f"cycle_dt = date'{cycle_dt.isoformat()}'"
-
-    if _is_table_name(target):
-        (
-            df.write.format("delta").mode("overwrite")
-              .option("replaceWhere", replace_where)
-              .partitionBy(WisdomColumns.CYCLE_DT, WisdomColumns.SOURCE_ID)
-              .saveAsTable(target)
-        )
-    else:
-        (
-            df.write.mode("overwrite")
-              .partitionBy(WisdomColumns.CYCLE_DT, WisdomColumns.SOURCE_ID)
-              .parquet(target)
-        )

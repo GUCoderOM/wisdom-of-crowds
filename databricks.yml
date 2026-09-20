@@ -14,14 +14,14 @@ variables:
     description: >
       Workspace path of the uploaded wheel. The task pip-installs this
       in-notebook, then dispatches on the transformation_payload.
-    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.4.0-py3-none-any.whl
+    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.5.0-py3-none-any.whl
   default_transformation_payload:
     description: >
       JSON string. The default triggers an ingest of the SPF source into
       the standard tables — override via `--params transformation_payload=...`
       at run time.
     default: |
-      {"transformation_name":"ingest_spf","inputs":{},"outputs":{"guesses":"wisdom_of_crowds.core.guesses","sources":"wisdom_of_crowds.core.sources"},"params":{}}
+      {"transformation_name":"ingest_spf","inputs":{},"outputs":{"answers":"wisdom_of_crowds.core.answers","sources":"wisdom_of_crowds.core.sources"},"params":{}}
 
 targets:
   dev:

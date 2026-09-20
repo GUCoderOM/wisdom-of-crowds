@@ -50,7 +50,7 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType
+from wisdom_of_crowds.schema.answers import INGEST_ANSWER_SCHEMA, QuestionType
 
 _log = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ class NOAASource(Source):
             _log.info("noaa_bad_forecast_hours_empty_batch", extra={
                 "forecast_hours": cfg.params.get("forecast_hours"),
             })
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         if not locations or not variables or not forecast_hours:
             _log.info("noaa_nothing_configured_empty_batch", extra={
@@ -123,7 +123,7 @@ class NOAASource(Source):
                 "n_variables": len(variables),
                 "n_horizons":  len(forecast_hours),
             })
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         try:
             payloads = self._fetch(
@@ -136,7 +136,7 @@ class NOAASource(Source):
             _log.info("noaa_download_failed_empty_batch", extra={
                 "api_url": api_url, "model": model, "err": repr(exc),
             })
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         rows = list(self._rows_from_payloads(
             payloads, locations, variables, forecast_hours, cfg,
@@ -146,10 +146,10 @@ class NOAASource(Source):
             _log.info("noaa_no_rows_empty_batch", extra={
                 "api_url": api_url, "n_payloads": len(payloads),
             })
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         _log.info("noaa_rows_built", extra={"rows": len(rows), "model": model})
-        return spark.createDataFrame(rows, INGEST_SCHEMA)
+        return spark.createDataFrame(rows, INGEST_ANSWER_SCHEMA)
 
     # ------------------------------------------------------------------
     # HTTP
@@ -215,7 +215,7 @@ class NOAASource(Source):
         raise RuntimeError(f"Open-Meteo ensemble API failed after {retries} attempts: {last}")
 
     # ------------------------------------------------------------------
-    # payload -> INGEST_SCHEMA rows
+    # payload -> INGEST_ANSWER_SCHEMA rows
     # ------------------------------------------------------------------
 
     @classmethod
@@ -229,7 +229,7 @@ class NOAASource(Source):
         *,
         include_control: bool = True,
     ) -> Iterator[tuple]:
-        """Yield one INGEST_SCHEMA tuple per (location, variable, horizon).
+        """Yield one INGEST_ANSWER_SCHEMA tuple per (location, variable, horizon).
 
         Pure apart from logging — no Spark, no network — so the row shape can
         be unit-tested against a recorded payload.
@@ -277,32 +277,33 @@ class NOAASource(Source):
                         })
                         continue
 
-                    guesses = [
-                        v for v in (_f(_at(hourly.get(key), idx)) for key in member_keys)
-                        if v is not None
-                    ]
-                    if not guesses:
+                    market_id = _market_id(var_slug, loc_name, target, hours)
+                    question  = _question(var_label, unit, loc_name, target, hours)
+                    any_row = False
+                    for key in member_keys:
+                        value = _f(_at(hourly.get(key), idx))
+                        if value is None:
+                            continue
+                        any_row = True
+                        # ``name`` is the ensemble member: ``control`` for the
+                        # unperturbed run, ``memberNN`` for perturbed members.
+                        member = "control" if key == var else key[len(f"{var}_"):]
+                        yield (
+                            cls.slug,                       # source
+                            market_id,
+                            question,
+                            QuestionType.NUMERIC_GUESSES,
+                            member,                         # name
+                            value,                          # answer_value
+                            None,                           # answer_outcome
+                            None,                           # weight
+                            target,                         # created_at = forecast time
+                            cfg.cycle_ts,                   # cycle_ts
+                        )
+                    if not any_row:
                         _log.warning("noaa_no_members_reported", extra={
                             "location": loc_name, "variable": var, "hours": hours,
                         })
-                        continue
-
-                    yield (
-                        cls.slug,                                   # source
-                        _market_id(var_slug, loc_name, target, hours),
-                        _question(var_label, unit, loc_name, target, hours),
-                        QuestionType.NUMERIC_GUESSES,               # question_type
-                        guesses,                                    # guesses
-                        None,                                       # outcomes
-                        None,                                       # prices
-                        len(guesses),                               # trader_count = crowd size
-                        None,                                       # volume_usd
-                        target,                                     # end_date = forecast time
-                        False,                                      # is_resolved — future forecast
-                        None,                                       # resolved_outcome
-                        None,                                       # resolved_value
-                        cfg.cycle_ts,                               # cycle_ts
-                    )
 
 
 # ---------------------------------------------------------------------------

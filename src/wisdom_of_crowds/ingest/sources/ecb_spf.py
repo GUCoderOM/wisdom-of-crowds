@@ -65,7 +65,7 @@ from dataclasses import dataclass
 from pyspark.sql import DataFrame, SparkSession
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.guesses import INGEST_SCHEMA, QuestionType
+from wisdom_of_crowds.schema.answers import INGEST_ANSWER_SCHEMA, QuestionType
 
 _log = logging.getLogger(__name__)
 
@@ -133,12 +133,8 @@ class ECBSPFSource(Source):
         _log.info("ecb_spf_download_start", extra={"url": url})
         raw = self._download(url)
         if raw is None:
-            # A missing or unreachable payload is not fatal: the runner
-            # replaceWhere-overwrites only this source's slice, so an empty
-            # batch leaves the previous cycle's rows for every other source
-            # untouched. Raising here would fail the whole ingest job.
             _log.warning("ecb_spf_download_failed", extra={"url": url})
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         wanted = self._resolve_variables(variables)
         rows = list(self._rows_from_archive(raw, wanted, min_year, max_horizon, cfg))
@@ -146,10 +142,10 @@ class ECBSPFSource(Source):
             _log.warning("ecb_spf_no_rows", extra={
                 "url": url, "min_year": min_year, "max_horizon": max_horizon,
             })
-            return spark.createDataFrame([], INGEST_SCHEMA)
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         _log.info("ecb_spf_rows_built", extra={"rows": len(rows)})
-        return spark.createDataFrame(rows, INGEST_SCHEMA)
+        return spark.createDataFrame(rows, INGEST_ANSWER_SCHEMA)
 
     # ------------------------------------------------------------------
     # download
@@ -255,11 +251,10 @@ class ECBSPFSource(Source):
         max_horizon: int,
         cfg: SourceConfig,
     ) -> Iterator[tuple]:
-        """Walk one survey round's CSV, emitting a row per populated cell."""
+        """Walk one survey round's CSV, emitting one row per populated
+        (variable, target quarter, forecaster) POINT cell."""
         wanted = {v.key: v for v in variables}
         survey_round = f"{survey_year}Q{survey_quarter}"
-        # (variable, target quarter) -> every forecaster's point forecast.
-        cells: dict[tuple[str, int, int], list[float]] = {}
 
         current: _Variable | None = None
         in_point_block = False
@@ -293,30 +288,26 @@ class ECBSPFSource(Source):
             if not 0 <= horizon <= max_horizon:
                 continue
 
+            forecaster = record[1].strip() if len(record) > 1 else ""
             point = _to_float(record[2] if len(record) > 2 else "")
             if point is None:
                 continue  # forecaster answered the bins but not the point.
-            cells.setdefault((current.key, target_year, target_quarter), []).append(point)
 
-        for (var_key, target_year, target_quarter), guesses in sorted(cells.items()):
-            variable = _VARIABLES_BY_KEY[var_key]
-            target = f"{target_year}Q{target_quarter}"
+            variable = _VARIABLES_BY_KEY[current.key]
+            target_str = f"{target_year}Q{target_quarter}"
+
             yield (
-                ECBSPFSource.slug,                                  # source
-                f"ecb_spf:{variable.slug}:{survey_round}:{target}",      # market_id
-                f"ECB SPF: {variable.label}, target {target} "
-                f"(surveyed {survey_round})",                            # question
-                QuestionType.NUMERIC_GUESSES,                            # question_type
-                guesses,                                                 # guesses
-                None,                                                    # outcomes
-                None,                                                    # prices
-                None,                                                    # trader_count
-                None,                                                    # volume_usd
-                None,                                                    # end_date
-                False,      # is_resolved — Eurostat outturns are joined later
-                None,                                                    # resolved_outcome
-                None,                                                    # resolved_value
-                cfg.cycle_ts,                                            # cycle_ts
+                ECBSPFSource.slug,                                          # source
+                f"ecb_spf:{variable.slug}:{survey_round}:{target_str}",      # market_id
+                f"ECB SPF: {variable.label}, target {target_str} "
+                f"(surveyed {survey_round})",                                # question
+                QuestionType.NUMERIC_GUESSES,                                # question_type
+                forecaster or None,                                          # name (FCT_SOURCE)
+                point,                                                       # answer_value
+                None,                                                        # answer_outcome
+                None,                                                        # weight
+                None,                                                        # created_at
+                cfg.cycle_ts,                                                # cycle_ts
             )
 
     @staticmethod

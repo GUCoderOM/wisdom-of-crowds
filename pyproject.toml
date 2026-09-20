@@ -1,6 +1,6 @@
 [project]
 name = "wisdom-of-crowds"
-version = "0.4.0"
+version = "0.5.0"
 description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment, generalised into a data pipeline over any source that carries individual guesses."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,9 +39,8 @@ dev = [
     "mypy>=1.11",
 ]
 
-[project.scripts]
-vox-ingest    = "wisdom_of_crowds.ingest.runner:main"
-vox-aggregate = "wisdom_of_crowds.aggregate_cli:main"
+# Console entry points removed in 0.5 — the notebook task dispatches on
+# a JSON transformation payload via wisdom_of_crowds.framework.run_payload.
 
 [build-system]
 requires      = ["hatchling"]
