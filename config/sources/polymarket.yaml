@@ -1,13 +1,20 @@
-# Parameters for the Polymarket ingestion source.
+# Parameters for the Polymarket ingestion source (Dune-backed).
 #
-# Polymarket is a real-money prediction market: markets come from the Gamma
-# API, individual trades from the Data API. Each market becomes one guesses
-# row; each trade becomes one `bets` row, written to the same generic table
-# Manifold writes to so per-individual activity sits side by side.
+# Polymarket's own /trades endpoint caps pagination at ~10,500 rows per
+# market (verified live 2026-09-20). To bypass that we pull trades from
+# Dune Analytics' curated ``polymarket_polygon.market_trades`` table.
+# The market universe still comes from Polymarket's Gamma API — that
+# endpoint isn't rate-limited on the market-list side.
 
-limit_markets:           100    # top-N markets by recent activity
-limit_trades_per_market: 500    # trades per market
-min_trade_count:         5      # skip markets with too few traders
-include_closed:          false  # only live markets by default
+limit_markets:    100         # top-N markets by 24h volume
+min_trade_count:  5           # skip markets with negligible activity on Gamma
+include_closed:   false       # unresolved markets only by default
 
-bets_output:             wisdom_of_crowds.core.bets
+# How far back to fetch trades. Dune reads are billed per row, so keep
+# this tight for daily ingest. 365 days = full annual view.
+lookback_days:    365
+
+# DUNE_API_KEY must be present at run time either in cfg.params
+# (transformation_payload.params.dune_api_key) or as an environment
+# variable. The key is never committed here — populate it via a
+# Databricks secret referenced by the notebook, or via .env locally.

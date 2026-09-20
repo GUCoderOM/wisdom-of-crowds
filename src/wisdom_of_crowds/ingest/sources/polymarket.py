@@ -1,21 +1,38 @@
-"""Polymarket ingestion — one row per trade, exhaustive pagination.
+"""Polymarket ingestion — via Dune Analytics (`polymarket_polygon.market_trades`).
 
-Every trade becomes one row in the shared ``answers`` table:
+Polymarket's own ``data-api.polymarket.com/trades`` endpoint refuses
+``offset`` values past ~10,500. That's the API's cap, not ours, so the
+per-market row count on hot markets was right-censored at 10,500 no
+matter how aggressively we paginated.
 
-* ``name``           — trader's proxy wallet address (``NULL`` if absent)
-* ``answer_value``   — fill probability, i.e. the price the trader paid
-* ``answer_outcome`` — which outcome they bought (``YES`` / ``NO`` / an answer text)
-* ``weight``         — trade size in USD notional
-* ``created_at``     — the trade's on-chain timestamp
+Dune Analytics indexes every on-chain Polymarket trade under
+``polymarket_polygon.market_trades`` (columns: ``condition_id``,
+``question``, ``token_outcome``, ``price``, ``amount``, ``shares``,
+``maker``, ``taker``, ``is_taker_side``, ``block_time``, ``unique_key``,
+...). Querying via the Dune API lifts the cap entirely.
 
-Pagination is exhaustive: for each market we walk
-``/trades?market=<conditionId>&offset=N`` until an empty (or partial)
-page returns. No per-market cap; the ingest run captures every trade
-the Data API knows about.
+Flow:
 
-APIs:
-  * ``https://gamma-api.polymarket.com/markets`` — market metadata
-  * ``https://data-api.polymarket.com/trades``   — individual trades
+1. Pull the market universe from the Gamma API (same as before — cheap,
+   uncensored on the market-list side).
+2. Run one Dune SQL query for those condition_ids, filtered to the
+   configured lookback window.
+3. Emit one row per trade into ``answers``:
+
+   * ``name``           — the trader's wallet address (taker if the
+     trade was taker-side, else maker)
+   * ``answer_value``   — the fill ``price``
+   * ``answer_outcome`` — ``token_outcome`` (the specific side the
+     trader bought)
+   * ``weight``         — ``amount`` (USD notional)
+   * ``created_at``     — ``block_time``
+
+Requires ``DUNE_API_KEY`` in ``cfg.params`` (or the process env). The
+Dune Plus tier is required — the source creates a fresh query per run
+so filters can be pushed into SQL. Free tier can't create queries via
+the API; if the key is a free-tier key, this raises at run time with a
+clear error, and callers can fall back to the Gamma-only path by
+setting ``dune_disabled: true`` in the YAML.
 """
 
 from __future__ import annotations
@@ -23,6 +40,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -37,70 +55,89 @@ from wisdom_of_crowds.schema.answers import INGEST_ANSWER_SCHEMA, QuestionType
 _log = logging.getLogger(__name__)
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
-_DATA_BASE  = "https://data-api.polymarket.com"
+_DUNE_BASE  = "https://api.dune.com/api/v1"
+
+_DUNE_QUERY_NAME = "wisdom_of_crowds:polymarket_trades"
+
+# Batch size when embedding condition IDs in a Dune SQL IN(...) clause.
+# Dune has a hard cap on SQL length; 200 IDs at ~66 chars each = ~13 KB
+# is well within limits and keeps each query fast.
+_IDS_PER_QUERY = 200
+
+# Dune execution poll config.
+_POLL_INTERVAL_S = 5
+_POLL_ATTEMPTS   = 120  # up to 10 min per query
 
 
 class PolymarketSource(Source):
     slug = "polymarket"
 
     def extract(self, spark: SparkSession, cfg: SourceConfig) -> DataFrame:
-        limit_markets    = int(cfg.params.get("limit_markets", 100))
-        page_size        = int(cfg.params.get("trades_page_size", 500))
-        min_trade_count  = int(cfg.params.get("min_trade_count", 5))
-        include_closed   = bool(cfg.params.get("include_closed", False))
-        per_market_cap   = cfg.params.get("max_trades_per_market")  # None = uncapped
+        limit_markets   = int(cfg.params.get("limit_markets", 100))
+        min_trade_count = int(cfg.params.get("min_trade_count", 5))
+        include_closed  = bool(cfg.params.get("include_closed", False))
+        # How far back to fetch trades from. None = no lower bound.
+        lookback_days   = cfg.params.get("lookback_days", 365)
+
+        api_key = cfg.params.get("dune_api_key") or os.environ.get("DUNE_API_KEY")
+        if not api_key:
+            _log.warning("polymarket_no_dune_key_empty_batch")
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         markets = self._list_markets(limit_markets, include_closed, min_trade_count)
         _log.info("polymarket_markets_listed", extra={"n": len(markets)})
+        if not markets:
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
+
+        condition_ids = [m["conditionId"] for m in markets if m.get("conditionId")]
+        cid_to_market = {m["conditionId"]: m for m in markets if m.get("conditionId")}
 
         rows: list[tuple] = []
-        for m in markets:
-            try:
-                self._emit_market(m, cfg, page_size, per_market_cap, rows)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("polymarket_market_skipped", extra={
-                    "condition_id": m.get("conditionId"),
-                    "slug":         m.get("slug"),
-                    "err":          repr(exc),
-                })
+        try:
+            for batch in _batches(condition_ids, _IDS_PER_QUERY):
+                for trade in self._fetch_trades_via_dune(api_key, batch, lookback_days):
+                    self._emit_trade(trade, cid_to_market, cfg, rows)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("polymarket_dune_failed_empty_batch", extra={"err": repr(exc)})
+            return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
 
         if not rows:
             return spark.createDataFrame([], INGEST_ANSWER_SCHEMA)
         return spark.createDataFrame(rows, INGEST_ANSWER_SCHEMA)
 
     # ------------------------------------------------------------------
-    # HTTP
+    # Gamma — market universe
     # ------------------------------------------------------------------
 
     @staticmethod
     def _get_json(base: str, path: str, query: dict[str, Any] | None = None,
-                  retries: int = 3) -> Any:
-        """GET + parse JSON with exponential backoff.
-
-        HTTP 400 is treated as a hard end-of-data signal: Polymarket's
-        ``/trades`` endpoint returns 400 for ``offset`` values past its
-        internal cap (empirically ~10,500). Callers use this to stop
-        pagination cleanly rather than fail the whole market.
-        """
+                  retries: int = 3, headers: dict[str, str] | None = None,
+                  method: str = "GET", body: bytes | None = None) -> Any:
         url = f"{base}{path}"
         if query:
             url += "?" + urllib.parse.urlencode(query, safe="")
-        req = urllib.request.Request(url, headers={"User-Agent": "wisdom-of-crowds/0.5"})
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "wisdom-of-crowds/0.5", **(headers or {})},
+            data=body,
+            method=method,
+        )
         last: Exception | None = None
         for attempt in range(retries):
             try:
-                with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — trusted host
+                with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 — trusted host
                     return json.loads(r.read().decode())
             except urllib.error.HTTPError as e:
-                if e.code == 400:
-                    # Past the pagination ceiling — treat as empty page.
-                    return []
+                # 4xx (except 429) is not a transient failure.
+                if e.code != 429 and 400 <= e.code < 500:
+                    body_text = e.read().decode("utf-8", errors="replace")[:300]
+                    raise RuntimeError(f"HTTP {e.code} {url}: {body_text}") from e
                 last = e
                 time.sleep(1.5 ** attempt)
             except (urllib.error.URLError, TimeoutError) as e:
                 last = e
                 time.sleep(1.5 ** attempt)
-        raise RuntimeError(f"Polymarket API failed after {retries} attempts: {last}")
+        raise RuntimeError(f"HTTP failed after {retries} attempts: {last}")
 
     def _list_markets(self, limit: int, include_closed: bool,
                       min_trade_count: int) -> list[dict[str, Any]]:
@@ -135,67 +172,139 @@ class PolymarketSource(Source):
             offset += page_size
         return pool
 
-    def _fetch_all_trades(
-        self, condition_id: str, page_size: int, cap: int | None,
-    ) -> Iterable[dict[str, Any]]:
-        fetched = 0
-        offset  = 0
-        while True:
-            page = self._get_json(_DATA_BASE, "/trades", {
-                "market":    condition_id,
-                "limit":     page_size,
-                "offset":    offset,
-                "takerOnly": "false",
-            })
-            if not page:
-                return
-            for t in page:
-                yield t
-                fetched += 1
-                if cap is not None and fetched >= cap:
-                    return
-            offset += page_size
-            if len(page) < page_size:
-                return
-
     # ------------------------------------------------------------------
-    # per-market emission
+    # Dune — per-trade fidelity
     # ------------------------------------------------------------------
 
-    def _emit_market(
+    def _fetch_trades_via_dune(
         self,
-        market:         dict[str, Any],
-        cfg:            SourceConfig,
-        page_size:      int,
-        per_market_cap: int | None,
-        rows:           list[tuple],
+        api_key:       str,
+        condition_ids: list[str],
+        lookback_days: int | None,
+    ) -> Iterable[dict[str, Any]]:
+        """Create a Dune query for this batch of condition IDs, execute it,
+        poll to completion, and yield one dict per trade row."""
+        sql = _build_trades_sql(condition_ids, lookback_days)
+        _log.info("polymarket_dune_query_create", extra={"n_ids": len(condition_ids)})
+        create_resp = self._get_json(
+            _DUNE_BASE, "/query",
+            headers={"X-DUNE-API-KEY": api_key, "Content-Type": "application/json"},
+            method="POST",
+            body=json.dumps({
+                "name":        _DUNE_QUERY_NAME,
+                "description": "auto-generated by wisdom-of-crowds ingest",
+                "query_sql":   sql,
+                "is_private":  True,
+            }).encode(),
+        )
+        query_id = create_resp.get("query_id")
+        if not query_id:
+            raise RuntimeError(f"Dune query creation returned no id: {create_resp}")
+
+        exec_resp = self._get_json(
+            _DUNE_BASE, f"/query/{query_id}/execute",
+            headers={"X-DUNE-API-KEY": api_key},
+            method="POST",
+        )
+        execution_id = exec_resp.get("execution_id")
+        if not execution_id:
+            raise RuntimeError(f"Dune execute returned no id: {exec_resp}")
+
+        # Poll to completion.
+        for _ in range(_POLL_ATTEMPTS):
+            time.sleep(_POLL_INTERVAL_S)
+            status = self._get_json(
+                _DUNE_BASE, f"/execution/{execution_id}/status",
+                headers={"X-DUNE-API-KEY": api_key},
+            )
+            state = status.get("state", "")
+            if state == "QUERY_STATE_COMPLETED":
+                break
+            if state == "QUERY_STATE_FAILED":
+                raise RuntimeError(
+                    f"Dune query {query_id} failed: {status.get('error')}",
+                )
+        else:
+            raise TimeoutError(f"Dune query {query_id} did not complete in time")
+
+        # Paginate result rows.
+        next_offset = 0
+        while True:
+            page = self._get_json(
+                _DUNE_BASE, f"/execution/{execution_id}/results",
+                query={"limit": 25000, "offset": next_offset},
+                headers={"X-DUNE-API-KEY": api_key},
+            )
+            result = page.get("result") or {}
+            rows = result.get("rows") or []
+            if not rows:
+                return
+            for r in rows:
+                yield r
+            meta = result.get("metadata") or {}
+            row_count = int(meta.get("row_count") or 0)
+            next_offset += len(rows)
+            if next_offset >= row_count:
+                return
+
+    def _emit_trade(
+        self,
+        trade:         dict[str, Any],
+        cid_to_market: dict[str, dict[str, Any]],
+        cfg:           SourceConfig,
+        rows:          list[tuple],
     ) -> None:
-        cid       = market["conditionId"]
-        question  = market.get("question") or f"polymarket:{cid}"
-        outcomes  = _parse_json_list(market.get("outcomes"))
-        silver_qtype = (
+        cid = trade.get("condition_id")
+        market = cid_to_market.get(cid)
+        if market is None:
+            return  # trade for a market not in our universe
+
+        outcomes = _parse_json_list(market.get("outcomes"))
+        qtype = (
             QuestionType.BINARY if len(outcomes) == 2 else QuestionType.CATEGORICAL
         )
+        question = market.get("question") or trade.get("question") or f"polymarket:{cid}"
 
-        for t in self._fetch_all_trades(cid, page_size, per_market_cap):
-            price = _f(t.get("price"))
-            rows.append((
-                self.slug,
-                cid,
-                question,
-                silver_qtype,
-                t.get("proxyWallet"),         # name — trader wallet (nullable)
-                price,                        # answer_value — fill probability
-                t.get("outcome"),             # answer_outcome — YES / NO / answer text
-                _f(t.get("size")),            # weight — USD notional
-                _epoch_to_ts(t.get("timestamp")),
-                cfg.cycle_ts,
-            ))
+        # The trader is the taker when is_taker_side, else the maker.
+        is_taker = bool(trade.get("is_taker_side"))
+        trader = trade.get("taker") if is_taker else trade.get("maker")
+
+        rows.append((
+            self.slug,
+            cid,
+            question,
+            qtype,
+            trader,                                     # name
+            _f(trade.get("price")),                     # answer_value
+            trade.get("token_outcome"),                 # answer_outcome
+            _f(trade.get("amount")),                    # weight
+            _parse_dune_time(trade.get("block_time")),  # created_at
+            cfg.cycle_ts,
+        ))
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_trades_sql(condition_ids: list[str], lookback_days: int | None) -> str:
+    quoted_ids = ",".join(f"'{cid}'" for cid in condition_ids)
+    time_clause = ""
+    if lookback_days is not None:
+        time_clause = f"\n  AND block_time > NOW() - INTERVAL '{int(lookback_days)}' DAY"
+    return (
+        "SELECT condition_id, question, token_outcome, price, amount, shares, "
+        "maker, taker, is_taker_side, block_time, unique_key\n"
+        "FROM polymarket_polygon.market_trades\n"
+        f"WHERE condition_id IN ({quoted_ids}){time_clause}\n"
+        "ORDER BY block_time DESC"
+    )
+
+
+def _batches(items: list[str], size: int) -> Iterable[list[str]]:
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
 
 def _f(x: Any) -> float | None:
@@ -222,10 +331,13 @@ def _parse_json_list(v: Any) -> list[Any]:
     return []
 
 
-def _epoch_to_ts(ts: Any) -> dt.datetime | None:
-    if ts is None:
+def _parse_dune_time(v: Any) -> dt.datetime | None:
+    """Dune returns times as ``'2026-09-20 03:59:21.000 UTC'``."""
+    if not isinstance(v, str) or not v:
         return None
     try:
-        return dt.datetime.fromtimestamp(int(ts), tz=dt.timezone.utc)
-    except (TypeError, ValueError):
+        # Strip trailing ' UTC'
+        s = v.replace(" UTC", "").strip()
+        return dt.datetime.fromisoformat(s).replace(tzinfo=dt.timezone.utc)
+    except ValueError:
         return None

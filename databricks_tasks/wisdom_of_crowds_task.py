@@ -69,6 +69,17 @@ payload_dict = json.loads(payload_str)
 import wisdom_of_crowds.transformations  # noqa: F401  — registers everything
 from wisdom_of_crowds.framework import TransformationPayload, run_payload
 
+# Inject secrets into the payload's params where relevant. Secrets stay
+# out of the payload string (which is visible in job run history) and
+# only enter the process for the run itself.
+try:
+    dune_api_key = dbutils.secrets.get("wisdom_of_crowds", "dune_api_key")
+except Exception:  # noqa: BLE001 — scope/key absent is expected for sources that don't need it
+    dune_api_key = ""
+if dune_api_key:
+    payload_dict.setdefault("params", {})
+    payload_dict["params"].setdefault("dune_api_key", dune_api_key)
+
 payload = TransformationPayload.from_dict(payload_dict)
 print("running transformation:", payload.transformation_name)
 row_counts = run_payload(spark, payload)
