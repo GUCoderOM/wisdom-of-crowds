@@ -82,12 +82,22 @@ class ManifoldSource(Source):
                     "market_id": m.get("id"), "slug": m.get("slug"), "err": repr(exc),
                 })
 
-        # Persist raw bets as a side-effect if the caller wants them. The
-        # runner writes the returned DataFrame; this method writes the
-        # bets DataFrame explicitly here because it's an additional output.
+        # Stash bets on self so the framework wrapper can write them to
+        # the shared ``bets`` table. The wrapper (in
+        # :mod:`wisdom_of_crowds.transformations.ingest`) reads
+        # ``self._bets_df``; source callers that want the legacy in-source
+        # write behaviour can still pass ``bets_output`` and this method
+        # will honour it below.
+        self._bets_df = (
+            spark.createDataFrame(bet_rows, BETS_SCHEMA) if bet_rows
+            else spark.createDataFrame([], BETS_SCHEMA)
+        )
         if bet_rows and bets_table:
-            bets_df = spark.createDataFrame(bet_rows, BETS_SCHEMA)
-            self._write_bets(bets_df, bets_table, source_pk=source_pk, cycle_dt=cycle_dt)
+            # Legacy path: write directly. New (transformation-framework)
+            # path leaves bets_table unset and lets the framework write.
+            self._write_bets(
+                self._bets_df, bets_table, source_pk=source_pk, cycle_dt=cycle_dt,
+            )
 
         if not silver_rows:
             return spark.createDataFrame([], INGEST_SCHEMA)

@@ -80,9 +80,16 @@ class PolymarketSource(Source):
                     "err": repr(exc),
                 })
 
+        # Stash bets on self for the framework wrapper to write. Legacy
+        # callers that supply ``bets_output`` still get the in-source write.
+        self._bets_df = (
+            spark.createDataFrame(bet_rows, BETS_SCHEMA) if bet_rows
+            else spark.createDataFrame([], BETS_SCHEMA)
+        )
         if bet_rows and bets_table:
-            bets_df = spark.createDataFrame(bet_rows, BETS_SCHEMA)
-            self._write_bets(bets_df, bets_table, source_pk=source_pk, cycle_dt=cycle_dt)
+            self._write_bets(
+                self._bets_df, bets_table, source_pk=source_pk, cycle_dt=cycle_dt,
+            )
 
         if not guess_rows:
             return spark.createDataFrame([], INGEST_SCHEMA)

@@ -1,35 +1,39 @@
 # Databricks notebook source
 # Single parameterised task for the ``wisdom_of_crowds_pipeline`` job.
 #
-# Everest/DAB convention: one job, one task, run parameters decide which
-# transformation runs. That keeps the job history unified, avoids task
-# fan-out per source, and makes it possible for parallel agents to trigger
-# their own runs against different (phase, source_slug) partitions without
-# stepping on each other.
+# Everest / DAB convention: one job, one task, one payload. The whole
+# run is identified by ``transformation_name`` inside the payload.
 #
 # Parameters:
-#   phase         - "ingest" | "aggregate" | "end_to_end"
-#   source_slug   - registry slug: sweets_jar | spf | manifold | ecb_spf | aaii | noaa
-#                   (unused when phase = "aggregate" without a per-source filter)
-#   guesses_table  - fully-qualified silver Delta table
-#   wisdom_table    - fully-qualified gold Delta table
-#   sources_table - fully-qualified dimension table
-#   wheel_path    - workspace path to the installed wheel
+#   transformation_payload - a JSON string of shape:
+#     {
+#       "transformation_name": "ingest_polymarket",
+#       "inputs":  { ... table refs by logical key ... },
+#       "outputs": { ... table refs by logical key ... },
+#       "params":  { "cycle_dt": "2026-09-20", ... }
+#     }
+#   wheel_path - workspace path to the installed wheel.
+#
+# The notebook installs the wheel, restarts Python, and hands the payload
+# to the framework runner which dispatches to a registered transformation.
 
-dbutils.widgets.text("phase",         "ingest")
-dbutils.widgets.text("source_slug",   "spf")
-dbutils.widgets.text("guesses_table",  "wisdom_of_crowds.core.guesses")
-dbutils.widgets.text("wisdom_table",    "wisdom_of_crowds.core.wisdom")
-dbutils.widgets.text("sources_table", "wisdom_of_crowds.core.sources")
-dbutils.widgets.text("wheel_path",    "")
+dbutils.widgets.text(
+    "transformation_payload",
+    '{"transformation_name": "ingest_spf", '
+    '"inputs": {}, '
+    '"outputs": {'
+    '"guesses": "wisdom_of_crowds.core.guesses", '
+    '"sources": "wisdom_of_crowds.core.sources"'
+    '}, '
+    '"params": {}}',
+)
+dbutils.widgets.text("wheel_path", "")
 
 # COMMAND ----------
 
 import subprocess
 import sys
 
-# Surface pip's own stderr: a bare check_call reports only "exit status 1",
-# which hides the actual reason (wrong Requires-Python, missing file, ...).
 _proc = subprocess.run(
     [sys.executable, "-m", "pip", "install", dbutils.widgets.get("wheel_path")],
     capture_output=True,
@@ -48,47 +52,24 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-import datetime as dt
-import sys
+import json
+import logging
 
-phase          = dbutils.widgets.get("phase").strip().lower()
-source_slug    = dbutils.widgets.get("source_slug").strip()
-guesses_table   = dbutils.widgets.get("guesses_table")
-wisdom_table     = dbutils.widgets.get("wisdom_table")
-sources_table  = dbutils.widgets.get("sources_table")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-if phase not in {"ingest", "aggregate", "end_to_end"}:
-    raise ValueError(
-        f"phase must be 'ingest', 'aggregate', or 'end_to_end'; got {phase!r}",
-    )
-
-# Ensure catalog + schema exist. Idempotent. Runs once per invocation so
-# the deploy step doesn't have to remember to create them separately.
+# Ensure catalog + schema exist (idempotent).
 spark.sql("CREATE CATALOG IF NOT EXISTS wisdom_of_crowds")
 spark.sql("CREATE SCHEMA IF NOT EXISTS wisdom_of_crowds.core")
 
-if phase in {"ingest", "end_to_end"}:
-    from wisdom_of_crowds.ingest.runner import main as ingest_main
-    sys.argv = [
-        "vox-ingest",
-        "--source-slug",    source_slug,
-        "--guesses-output",  guesses_table,
-        "--sources-output", sources_table,
-    ]
-    ingest_main()
+payload_str = dbutils.widgets.get("transformation_payload").strip()
+if not payload_str:
+    raise ValueError("transformation_payload is empty")
+payload_dict = json.loads(payload_str)
 
-if phase in {"aggregate", "end_to_end"}:
-    from wisdom_of_crowds.aggregate_cli import main as agg_main
-    argv = [
-        "vox-aggregate",
-        "--guesses-source", guesses_table,
-        "--wisdom-output",   wisdom_table,
-        "--cycle-dt",      dt.date.today().isoformat(),
-    ]
-    # Aggregating a single source is more efficient (partition pruning);
-    # if source_slug is set, hand it through so the aggregator scopes to
-    # that (cycle_dt, source_id) partition.
-    if source_slug:
-        argv += ["--source-slug", source_slug]
-    sys.argv = argv
-    agg_main()
+import wisdom_of_crowds.transformations  # noqa: F401  — registers everything
+from wisdom_of_crowds.framework import TransformationPayload, run_payload
+
+payload = TransformationPayload.from_dict(payload_dict)
+print("running transformation:", payload.transformation_name)
+row_counts = run_payload(spark, payload)
+print("row counts per output:", row_counts)

@@ -1,47 +1,27 @@
 # Databricks Asset Bundle for the wisdom-of-crowds data pipeline.
 #
-# Everest/DAB style: one job, one parameterised task. Run parameters
-# choose which transformation runs (`phase = ingest | aggregate |
-# end_to_end`) and against which source (`source_slug`). Parallel agents
-# can trigger their own runs with different parameter combinations without
-# stepping on each other, thanks to composite (cycle_dt, source_id)
-# partitioning on the silver + gold Delta tables.
-#
-# Every ingestion and every aggregation for every data source lives under
-# the single ``wisdom_of_crowds_pipeline`` job — the whole run history for
-# this project is queryable from one place.
+# One job, one task, one payload. Every run is identified by
+# ``transformation_name`` inside the ``transformation_payload`` parameter.
+# The registered transformations live in
+# ``src/wisdom_of_crowds/transformations/`` and are dispatched by the
+# framework at run time.
 
 bundle:
   name: wisdom-of-crowds
 
 variables:
-  catalog:
-    description: Unity catalog for all wisdom-of-crowds tables.
-    default:     wisdom_of_crowds
-  schema:
-    description: Schema within the catalog holding wisdom-of-crowds tables.
-    default:     core
-  guesses_table:
-    description: Fully-qualified guesses Delta table.
-    default:     ${var.catalog}.${var.schema}.guesses
-  wisdom_table:
-    description: Fully-qualified wisdom Delta table.
-    default:     ${var.catalog}.${var.schema}.wisdom
-  sources_table:
-    description: Fully-qualified source dimension table.
-    default:     ${var.catalog}.${var.schema}.sources
-  default_phase:
-    description: Which transformation phase runs by default.
-    default:     end_to_end
-  default_source_slug:
-    description: Which source the pipeline pulls by default.
-    default:     spf
   wheel_path:
     description: >
       Workspace path of the uploaded wheel. The task pip-installs this
-      in-notebook; a non-empty serverless `dependencies` list restarts the
-      Python REPL underneath a running notebook.
+      in-notebook, then dispatches on the transformation_payload.
     default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.4.0-py3-none-any.whl
+  default_transformation_payload:
+    description: >
+      JSON string. The default triggers an ingest of the SPF source into
+      the standard tables — override via `--params transformation_payload=...`
+      at run time.
+    default: |
+      {"transformation_name":"ingest_spf","inputs":{},"outputs":{"guesses":"wisdom_of_crowds.core.guesses","sources":"wisdom_of_crowds.core.sources"},"params":{}}
 
 targets:
   dev:
@@ -61,36 +41,23 @@ resources:
     wisdom_of_crowds_pipeline:
       name: wisdom_of_crowds_pipeline
       description: >
-        Wisdom-of-crowds data pipeline. One parameterised task; run
-        parameters pick the phase (ingest / aggregate / end_to_end) and
-        source. Every ingestion + aggregation run for every data source
-        lives under this one job. Add a new source by dropping a Source
-        subclass in src/wisdom_of_crowds/ingest/sources/ and a YAML config
-        in config/sources/, then triggering a run with source_slug=<slug>.
+        Wisdom-of-crowds data pipeline. One parameterised task; the
+        transformation_payload JSON parameter picks the named
+        transformation and its input/output table refs. Every ingestion
+        and aggregation run for every data source lives under this job,
+        keyed on transformation_name.
       tags:
-        project: wisdom-of-crowds
+        project:   wisdom-of-crowds
         component: pipeline
 
       parameters:
-        - name:    phase
-          default: ${var.default_phase}
-        - name:    source_slug
-          default: ${var.default_source_slug}
-        - name:    guesses_table
-          default: ${var.guesses_table}
-        - name:    wisdom_table
-          default: ${var.wisdom_table}
-        - name:    sources_table
-          default: ${var.sources_table}
+        - name:    transformation_payload
+          default: ${var.default_transformation_payload}
 
       tasks:
-        - task_key: run_pipeline
+        - task_key: run_transformation
           notebook_task:
             notebook_path: ./databricks_tasks/wisdom_of_crowds_task.py
             base_parameters:
-              phase:         "{{job.parameters.phase}}"
-              source_slug:   "{{job.parameters.source_slug}}"
-              guesses_table:  "{{job.parameters.guesses_table}}"
-              wisdom_table:    "{{job.parameters.wisdom_table}}"
-              sources_table: "{{job.parameters.sources_table}}"
-              wheel_path:    ${var.wheel_path}
+              transformation_payload: "{{job.parameters.transformation_payload}}"
+              wheel_path:             ${var.wheel_path}
