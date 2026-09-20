@@ -75,15 +75,28 @@ class PolymarketSource(Source):
     @staticmethod
     def _get_json(base: str, path: str, query: dict[str, Any] | None = None,
                   retries: int = 3) -> Any:
+        """GET + parse JSON with exponential backoff.
+
+        HTTP 400 is treated as a hard end-of-data signal: Polymarket's
+        ``/trades`` endpoint returns 400 for ``offset`` values past its
+        internal cap (empirically ~10,500). Callers use this to stop
+        pagination cleanly rather than fail the whole market.
+        """
         url = f"{base}{path}"
         if query:
             url += "?" + urllib.parse.urlencode(query, safe="")
-        req = urllib.request.Request(url, headers={"User-Agent": "wisdom-of-crowds/0.4"})
+        req = urllib.request.Request(url, headers={"User-Agent": "wisdom-of-crowds/0.5"})
         last: Exception | None = None
         for attempt in range(retries):
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — trusted host
                     return json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                if e.code == 400:
+                    # Past the pagination ceiling — treat as empty page.
+                    return []
+                last = e
+                time.sleep(1.5 ** attempt)
             except (urllib.error.URLError, TimeoutError) as e:
                 last = e
                 time.sleep(1.5 ** attempt)

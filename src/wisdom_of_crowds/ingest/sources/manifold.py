@@ -244,8 +244,16 @@ class ManifoldSource(Source):
                 value   = prob_after            # fill probability
                 outcome = b.get("outcome")      # "YES" / "NO"
             else:  # MULTI / FREE_RESP
-                # bet.outcome is an answer id; map to its text.
-                aid = b.get("outcome")
+                # A Manifold multi-outcome market is N independent YES/NO
+                # sub-markets, one per answer. Each bet carries
+                # ``answerId`` (which sub-market) and ``outcome`` (which
+                # side, YES or NO). Only YES bets are a direct vote for
+                # that answer at a revealed price; NO bets are indirect
+                # votes against, which don't fit a single-choice mode
+                # cleanly — we skip them.
+                if b.get("outcome") != "YES":
+                    continue
+                aid = b.get("answerId")
                 outcome_text = answers_by_id.get(aid) if aid else None
                 if outcome_text is None:
                     # Answer is resolved-and-filtered OR unknown — skip.
