@@ -1,0 +1,90 @@
+# Databricks Asset Bundle for the vox-populi wisdom-of-crowds pipeline.
+#
+# `databricks bundle deploy` builds the wheel via the artifact below,
+# uploads it and the source to the workspace, and creates the job. Then
+# `databricks bundle run vox_populi` triggers a run.
+#
+# Naming: the job is called *vox_populi* — Galton's own phrase for the
+# crowd's answer. Every ingestion + aggregation run of this pipeline
+# lives under this single Job in the Databricks Workflows UI.
+
+bundle:
+  name: vox-populi
+
+variables:
+  silver_table:
+    description: Fully-qualified silver Delta table.
+    default:     workspace.default.vox_populi_silver
+  gold_table:
+    description: Fully-qualified gold Delta table.
+    default:     workspace.default.vox_populi_gold
+  default_source_id:
+    description: Which source the pipeline pulls by default.
+    default:     spf
+
+targets:
+  dev:
+    default: true
+    mode:    development
+    workspace:
+      host: https://dbc-bd84c712-176d.cloud.databricks.com
+
+artifacts:
+  wisdom_of_crowds:
+    type:  whl
+    path:  .
+    build: uv build --wheel
+
+resources:
+  jobs:
+    vox_populi:
+      name: vox_populi
+      description: >
+        Wisdom-of-crowds data pipeline. Ingests one source per run into
+        silver, then aggregates all silver rows into gold. Add more
+        sources by dropping a Source subclass in
+        src/wisdom_of_crowds/ingest/sources/ and a YAML config in
+        config/sources/.
+      tags:
+        project: wisdom-of-crowds
+        owner:   yousufalabdullatif@gmail.com
+
+      parameters:
+        - name:    source_id
+          default: ${var.default_source_id}
+        - name:    silver_table
+          default: ${var.silver_table}
+        - name:    gold_table
+          default: ${var.gold_table}
+
+      tasks:
+        - task_key:       ingest
+          environment_key: default
+          python_wheel_task:
+            package_name: wisdom-of-crowds
+            entry_point:  vox-ingest
+            parameters:
+              - "--source-id"
+              - "{{job.parameters.source_id}}"
+              - "--silver-output"
+              - "{{job.parameters.silver_table}}"
+
+        - task_key:       aggregate
+          depends_on:
+            - task_key: ingest
+          environment_key: default
+          python_wheel_task:
+            package_name: wisdom-of-crowds
+            entry_point:  vox-aggregate
+            parameters:
+              - "--silver-source"
+              - "{{job.parameters.silver_table}}"
+              - "--gold-output"
+              - "{{job.parameters.gold_table}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/wisdom_of_crowds-0.2.0-py3-none-any.whl

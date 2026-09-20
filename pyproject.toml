@@ -1,25 +1,25 @@
 [project]
 name = "wisdom-of-crowds"
-version = "0.1.0"
-description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment"
+version = "0.2.0"
+description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment, generalised into a data pipeline over any source that carries individual guesses."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 license = { text = "MIT" }
 authors = [{ name = "Yousuf Abdullatif" }]
 
 dependencies = [
-    # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0)
-    # https://docs.databricks.com/aws/en/release-notes/runtime/
+    # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0).
     "pyspark==4.0.0",
     "pyarrow>=18.0.0",
     "pandas>=2.2.0,<3.0.0",
+    "pyyaml>=6.0.1",
+    "openpyxl>=3.1.2",     # for SPF's Excel file
 ]
 
 [project.optional-dependencies]
 local = [
     "jupyterlab>=4.2",
     "ipykernel>=6.29",
-    "matplotlib>=3.9",       # small optional plot in the summary cell
 ]
 dev = [
     "pytest>=8.3",
@@ -28,8 +28,22 @@ dev = [
     "mypy>=1.11",
 ]
 
+[project.scripts]
+vox-ingest    = "wisdom_of_crowds.ingest.runner:main"
+vox-aggregate = "wisdom_of_crowds.aggregate_cli:main"
+
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wisdom_of_crowds"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "wisdom_of_crowds/_config"   # ships config/ inside the wheel
+
 [tool.ruff]
-line-length = 100
+line-length    = 100
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -37,4 +51,4 @@ select = ["E", "F", "I", "N", "B", "UP", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts   = "-ra --strict-markers"

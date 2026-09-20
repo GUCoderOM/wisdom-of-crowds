@@ -1,0 +1,11 @@
+# Parameters for the Philadelphia Fed SPF ingestion source.
+#
+# The macro variables to pull. Each becomes multiple silver rows —
+# one per (survey_quarter, horizon) — with an array of forecaster guesses.
+# The full sheet list on SPFmicrodata.xlsx has 60+ variables; keep the
+# default set tight for the first cycle. Add more freely.
+
+url:          "https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/survey-of-professional-forecasters/historical-data/SPFmicrodata.xlsx"
+variables:    ["UNEMP", "RGDP", "CPI", "NGDP", "PGDP", "INDPROD", "HOUSING", "TBILL"]
+min_year:     2020
+max_horizon:  6

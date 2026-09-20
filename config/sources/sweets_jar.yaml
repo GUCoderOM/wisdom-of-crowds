@@ -1,0 +1,7 @@
+# Parameters for the sweets-jar ingestion source.
+# The runner passes these through to SweetsJarSource.extract().
+
+input_path:  "data/sweets-jar-guesses.csv"
+market_id:   "sweets-jar-original"
+question:    "How many sweets are in the jar?"
+# resolved_value: 200   # uncomment once we count the jar.
