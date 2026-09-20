@@ -70,7 +70,7 @@ def build_gold(guesses: DataFrame, cycle_dt: dt.date) -> DataFrame:
     result = when_chain
     assert result is not None, "STRATEGY_REGISTRY is empty"
 
-    projected = silver.withColumn("_result", result)
+    projected = guesses.withColumn("_result", result)
 
     gold = projected.select(
         F.col(GuessColumns.SOURCE_ID).alias(WisdomColumns.SOURCE_ID),
