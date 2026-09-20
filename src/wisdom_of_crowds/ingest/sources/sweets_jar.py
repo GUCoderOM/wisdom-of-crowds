@@ -8,23 +8,32 @@ pipeline as any other source.
 
 from __future__ import annotations
 
+import csv
 import pathlib
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from wisdom_of_crowds.ingest.base import Source, SourceConfig
-from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType, SilverColumns
+from wisdom_of_crowds.schema.silver import INGEST_SCHEMA, QuestionType
 
 
 class SweetsJarSource(Source):
-    slug = "sweets_jar"
+    """Read the tiny ``name,guess`` CSV bundled with this project.
 
-    _CSV_SCHEMA = StructType([
-        StructField("name",  StringType(),  nullable=False),
-        StructField("guess", IntegerType(), nullable=False),
-    ])
+    The CSV is small (~200 rows), so we parse it in the driver with
+    stdlib ``csv`` and hand the result to ``spark.createDataFrame``. That
+    avoids two headaches:
+
+    * ``spark.read.csv`` requires a filesystem Spark can see. On
+      Databricks serverless, the ephemeral Python env
+      (``/local_disk0/.ephemeral_nfs/…``) is not one of those, so a wheel
+      resource read straight from disk fails with
+      ``LocalFilesystemAccessDeniedException``.
+    * The dataset is meant to work identically locally and on Databricks
+      without asking the user to upload the CSV to a Volume first.
+    """
+
+    slug = "sweets_jar"
 
     def extract(self, spark: SparkSession, cfg: SourceConfig) -> DataFrame:
         input_path = self._resolve_input_path(cfg.params["input_path"])
@@ -32,41 +41,45 @@ class SweetsJarSource(Source):
         market_id  = cfg.params.get("market_id", "sweets-jar-original")
         resolved   = cfg.params.get("resolved_value")  # optional
 
-        raw = (
-            spark.read.option("header", "true")
-            .schema(self._CSV_SCHEMA)
-            .csv(input_path)
-        )
+        guesses = self._read_guesses(input_path)
 
-        guesses = raw.agg(F.collect_list(F.col("guess").cast("double")).alias("guesses"))
-
-        return guesses.select(
-            F.lit(self.slug).alias(SilverColumns.SOURCE),
-            F.lit(market_id).alias(SilverColumns.MARKET_ID),
-            F.lit(question).alias(SilverColumns.QUESTION),
-            F.lit(QuestionType.NUMERIC_GUESSES).alias(SilverColumns.QUESTION_TYPE),
-            F.col("guesses").alias(SilverColumns.GUESSES),
-            F.lit(None).cast(INGEST_SCHEMA[SilverColumns.OUTCOMES].dataType).alias(SilverColumns.OUTCOMES),
-            F.lit(None).cast(INGEST_SCHEMA[SilverColumns.PRICES].dataType).alias(SilverColumns.PRICES),
-            F.lit(None).cast("long").alias(SilverColumns.TRADER_COUNT),
-            F.lit(None).cast("double").alias(SilverColumns.VOLUME_USD),
-            F.lit(None).cast("timestamp").alias(SilverColumns.END_DATE),
-            F.lit(resolved is not None).alias(SilverColumns.IS_RESOLVED),
-            F.lit(None).cast("string").alias(SilverColumns.RESOLVED_OUTCOME),
-            F.lit(resolved).cast("double").alias(SilverColumns.RESOLVED_VALUE),
-            F.lit(cfg.cycle_ts).cast("timestamp").alias(SilverColumns.CYCLE_TS),
+        row = (
+            self.slug,
+            market_id,
+            question,
+            QuestionType.NUMERIC_GUESSES,
+            guesses,              # guesses (list[float])
+            None,                 # outcomes
+            None,                 # prices
+            None,                 # trader_count
+            None,                 # volume_usd
+            None,                 # end_date
+            resolved is not None, # is_resolved
+            None,                 # resolved_outcome
+            float(resolved) if resolved is not None else None,  # resolved_value
+            cfg.cycle_ts,         # cycle_ts
         )
+        return spark.createDataFrame([row], INGEST_SCHEMA)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_guesses(path: str) -> list[float]:
+        """Parse the ``name,guess`` CSV into a list of floats."""
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            return [float(row["guess"]) for row in reader if row.get("guess")]
 
     @staticmethod
     def _resolve_input_path(raw_path: str) -> str:
-        """Resolve a possibly-relative ``input_path`` against the packaged
-        wheel data (``_data/`` sibling of ``_config/``, force-included by
-        ``pyproject.toml``) or the repo checkout, whichever is first.
+        """Resolve a possibly-relative ``input_path`` to an absolute
+        filesystem path we can open with ``open()``.
 
-        Databricks Spark rejects relative paths outright, so this
-        deterministically upgrades e.g. ``data/sweets-jar-guesses.csv``
-        into an absolute filesystem path. Absolute paths are returned
-        untouched.
+        Searches, in order: the wheel's packaged ``_data/`` (force-included
+        by ``pyproject.toml``), then the repo checkout's ``data/`` (for
+        local dev). Absolute paths are returned untouched.
         """
         p = pathlib.Path(raw_path)
         if p.is_absolute():
@@ -74,10 +87,10 @@ class SweetsJarSource(Source):
 
         here = pathlib.Path(__file__).resolve()
         for parent in [here.parent, *here.parents]:
-            for prefix in ("data", "_data"):
+            for prefix in ("_data", "data"):
                 candidate = parent / prefix / p.name
                 if candidate.is_file():
-                    return f"file://{candidate}"
-        # Last resort — return as-is so the caller sees the original
-        # error rather than a silently-mangled path.
+                    return str(candidate)
+        # Fall through — return the raw path so the eventual FileNotFoundError
+        # names the missing resource clearly.
         return raw_path
