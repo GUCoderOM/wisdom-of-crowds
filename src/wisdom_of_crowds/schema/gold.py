@@ -41,7 +41,13 @@ GOLD_SCHEMA: StructType = StructType([
     StructField(GoldColumns.MARKET_ID,            StringType(),  nullable=False),
     StructField(GoldColumns.QUESTION,             StringType(),  nullable=False),
     StructField(GoldColumns.QUESTION_TYPE,        StringType(),  nullable=False),
-    StructField(GoldColumns.WISDOM,               DoubleType(),  nullable=False),
+    # NULL wisdom is legitimate: it means silver had a row for this
+    # market but the strategy could not compute an answer (e.g. a
+    # multi-outcome market where every price is 0). Keeping the row in
+    # gold with NULL wisdom preserves the silver->gold 1:1 mapping and
+    # makes "which questions couldn't we answer" a queryable signal
+    # instead of a hidden diff between the two tables.
+    StructField(GoldColumns.WISDOM,               DoubleType(),  nullable=True),
     StructField(GoldColumns.WISDOM_OUTCOME,       StringType(),  nullable=True),
     StructField(GoldColumns.GUESSES,              LongType(),    nullable=False),
     StructField(GoldColumns.RESOLVED_VALUE,       DoubleType(),  nullable=True),
