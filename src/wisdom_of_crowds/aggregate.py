@@ -92,7 +92,12 @@ def build_gold(silver: DataFrame, cycle_dt: dt.date) -> DataFrame:
         ).alias(GoldColumns.SIGNED_PERCENT_ERROR),
         F.lit(cycle_dt).cast("date").alias(GoldColumns.CYCLE_DT),
     )
-    return gold
+    # Contract: gold.wisdom is NOT NULL. If a silver row genuinely has no
+    # data to aggregate (e.g. a Manifold multi-outcome market with an
+    # empty answers array even after hydration), we drop it here rather
+    # than emit a row that fails the schema at write time. The dropped
+    # market_ids are still available in silver for audit.
+    return gold.filter(F.col(GoldColumns.WISDOM).isNotNull())
 
 
 # ---------------------------------------------------------------------------
