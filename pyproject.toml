@@ -3,31 +3,36 @@ name = "wisdom-of-crowds"
 version = "0.2.0"
 description = "A faithful replication of Galton's 1907 wisdom-of-crowds experiment, generalised into a data pipeline over any source that carries individual guesses."
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Yousuf Abdullatif" }]
 
-# Runtime deps only. pyspark is deliberately NOT here: every environment that
-# runs this wheel (serverless, DBR) already provides Spark, and installing
-# pyspark alongside it shadows the built-in client so the wheel fails to
-# import — the same conflict requirements-connect.txt documents for
-# databricks-connect. Local Spark comes from the "local"/"dev" extras.
+# Runtime deps: ONLY packages the Databricks runtime does not already ship.
+#
+# Anything Spark is binary-coupled to (pyspark, pyarrow, pandas) must stay out
+# of this list. Declaring them makes pip reinstall them into the serverless
+# environment on top of the runtime's own copies, which breaks the Spark client
+# — the wheel then fails to import, or the Python REPL detaches mid-run. This
+# is the same conflict requirements-connect.txt documents for databricks-connect.
+# Local development gets them explicitly from the "local"/"dev" extras.
 dependencies = [
-    "pyarrow>=18.0.0",
-    "pandas>=2.2.0,<3.0.0",
-    "pyyaml>=6.0.1",
-    "openpyxl>=3.1.2",     # for SPF's Excel file
+    "pyyaml>=6.0",        # serverless ships 6.0; do not force an upgrade
+    "openpyxl>=3.1.2",     # for SPF's Excel file; not provided by the runtime
 ]
 
 [project.optional-dependencies]
 local = [
     # Pinned to match Databricks Runtime 17.3 LTS (Spark 4.0.0).
     "pyspark==4.0.0",
+    "pyarrow>=18.0.0",
+    "pandas>=2.2.0,<3.0.0",
     "jupyterlab>=4.2",
     "ipykernel>=6.29",
 ]
 dev = [
     "pyspark==4.0.0",
+    "pyarrow>=18.0.0",
+    "pandas>=2.2.0,<3.0.0",
     "pytest>=8.3",
     "pytest-mock>=3.14",
     "ruff>=0.6",

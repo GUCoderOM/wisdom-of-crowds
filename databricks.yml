@@ -21,6 +21,12 @@ variables:
   default_source_id:
     description: Which source the pipeline pulls by default.
     default:     spf
+  wheel_path:
+    description: >
+      Workspace path of the uploaded wheel. The tasks pip-install this
+      in-notebook; a non-empty serverless `dependencies` list restarts the
+      Python REPL underneath a running notebook.
+    default:     ${workspace.artifact_path}/.internal/wisdom_of_crowds-0.2.0-py3-none-any.whl
 
 targets:
   dev:
@@ -58,33 +64,20 @@ resources:
           default: ${var.gold_table}
 
       tasks:
-        - task_key:       ingest
-          environment_key: default
-          python_wheel_task:
-            package_name: wisdom-of-crowds
-            entry_point:  vox-ingest
-            parameters:
-              - "--source-id"
-              - "{{job.parameters.source_id}}"
-              - "--silver-output"
-              - "{{job.parameters.silver_table}}"
+        - task_key: ingest
+          notebook_task:
+            notebook_path: ./databricks_tasks/ingest_task.py
+            base_parameters:
+              source_id:    "{{job.parameters.source_id}}"
+              silver_table: "{{job.parameters.silver_table}}"
+              wheel_path:   ${var.wheel_path}
 
-        - task_key:       aggregate
+        - task_key: aggregate
           depends_on:
             - task_key: ingest
-          environment_key: default
-          python_wheel_task:
-            package_name: wisdom-of-crowds
-            entry_point:  vox-aggregate
-            parameters:
-              - "--silver-source"
-              - "{{job.parameters.silver_table}}"
-              - "--gold-output"
-              - "{{job.parameters.gold_table}}"
-
-      environments:
-        - environment_key: default
-          spec:
-            client: "2"
-            dependencies:
-              - ./dist/wisdom_of_crowds-0.2.0-py3-none-any.whl
+          notebook_task:
+            notebook_path: ./databricks_tasks/aggregate_task.py
+            base_parameters:
+              silver_table: "{{job.parameters.silver_table}}"
+              gold_table:   "{{job.parameters.gold_table}}"
+              wheel_path:   ${var.wheel_path}
