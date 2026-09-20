@@ -1,5 +1,5 @@
 # Databricks notebook source
-# Single parameterised task for the ``vox_populi`` job.
+# Single parameterised task for the ``wisdom_of_crowds_pipeline`` job.
 #
 # Everest/DAB convention: one job, one task, run parameters decide which
 # transformation runs. That keeps the job history unified, avoids task
@@ -8,19 +8,19 @@
 # stepping on each other.
 #
 # Parameters:
-#   phase        - "ingest" | "aggregate" | "end_to_end"
-#   source_slug  - registry slug: sweets_jar | spf | manifold | ecb_spf | aaii | noaa
-#                  (unused when phase = "aggregate" without a per-source filter)
-#   silver_table - fully-qualified silver Delta table
-#   gold_table   - fully-qualified gold Delta table
-#   sources_table - fully-qualified dimension table (optional; runner derives it)
-#   wheel_path   - workspace path to the installed wheel
+#   phase         - "ingest" | "aggregate" | "end_to_end"
+#   source_slug   - registry slug: sweets_jar | spf | manifold | ecb_spf | aaii | noaa
+#                   (unused when phase = "aggregate" without a per-source filter)
+#   silver_table  - fully-qualified silver Delta table
+#   gold_table    - fully-qualified gold Delta table
+#   sources_table - fully-qualified dimension table
+#   wheel_path    - workspace path to the installed wheel
 
 dbutils.widgets.text("phase",         "ingest")
 dbutils.widgets.text("source_slug",   "spf")
-dbutils.widgets.text("silver_table",  "vox_populi.core.silver")
-dbutils.widgets.text("gold_table",    "vox_populi.core.gold")
-dbutils.widgets.text("sources_table", "vox_populi.core.sources")
+dbutils.widgets.text("silver_table",  "wisdom_of_crowds.core.silver")
+dbutils.widgets.text("gold_table",    "wisdom_of_crowds.core.gold")
+dbutils.widgets.text("sources_table", "wisdom_of_crowds.core.sources")
 dbutils.widgets.text("wheel_path",    "")
 
 # COMMAND ----------
@@ -64,8 +64,8 @@ if phase not in {"ingest", "aggregate", "end_to_end"}:
 
 # Ensure catalog + schema exist. Idempotent. Runs once per invocation so
 # the deploy step doesn't have to remember to create them separately.
-spark.sql("CREATE CATALOG IF NOT EXISTS vox_populi")
-spark.sql("CREATE SCHEMA IF NOT EXISTS vox_populi.core")
+spark.sql("CREATE CATALOG IF NOT EXISTS wisdom_of_crowds")
+spark.sql("CREATE SCHEMA IF NOT EXISTS wisdom_of_crowds.core")
 
 if phase in {"ingest", "end_to_end"}:
     from wisdom_of_crowds.ingest.runner import main as ingest_main

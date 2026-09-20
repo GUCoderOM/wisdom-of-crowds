@@ -9,4 +9,4 @@ include_resolved:       false    # only live markets by default
 # Where to put the raw per-bet fidelity table. When ingesting to a Delta
 # lake, set this to a catalog.schema.table. When ingesting locally, leave
 # null and the runner writes a Parquet directory alongside silver.
-bets_output:            vox_populi.core.manifold_bets
+bets_output:            wisdom_of_crowds.core.manifold_bets

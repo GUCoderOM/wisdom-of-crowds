@@ -41,7 +41,7 @@ _log = logging.getLogger(__name__)
 # The dimension table lives next to silver. Callers may override via
 # IngestJobConfig.sources_output; if unset the runner derives it from
 # silver_output by swapping the last name segment.
-_DEFAULT_SOURCES_TABLE = "vox_populi.core.sources"
+_DEFAULT_SOURCES_TABLE = "wisdom_of_crowds.core.sources"
 
 
 @dataclass(frozen=True)

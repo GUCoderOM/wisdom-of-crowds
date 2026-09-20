@@ -1,4 +1,4 @@
-# Databricks Asset Bundle for the vox-populi wisdom-of-crowds pipeline.
+# Databricks Asset Bundle for the wisdom-of-crowds data pipeline.
 #
 # Everest/DAB style: one job, one parameterised task. Run parameters
 # choose which transformation runs (`phase = ingest | aggregate |
@@ -6,16 +6,20 @@
 # can trigger their own runs with different parameter combinations without
 # stepping on each other, thanks to composite (cycle_dt, source_id)
 # partitioning on the silver + gold Delta tables.
+#
+# Every ingestion and every aggregation for every data source lives under
+# the single ``wisdom_of_crowds_pipeline`` job — the whole run history for
+# this project is queryable from one place.
 
 bundle:
-  name: vox-populi
+  name: wisdom-of-crowds
 
 variables:
   catalog:
-    description: Unity catalog for all vox-populi tables.
-    default:     vox_populi
+    description: Unity catalog for all wisdom-of-crowds tables.
+    default:     wisdom_of_crowds
   schema:
-    description: Schema within the catalog holding vox-populi tables.
+    description: Schema within the catalog holding wisdom-of-crowds tables.
     default:     core
   silver_table:
     description: Fully-qualified silver Delta table.
@@ -54,17 +58,18 @@ artifacts:
 
 resources:
   jobs:
-    vox_populi:
-      name: vox_populi
+    wisdom_of_crowds_pipeline:
+      name: wisdom_of_crowds_pipeline
       description: >
         Wisdom-of-crowds data pipeline. One parameterised task; run
         parameters pick the phase (ingest / aggregate / end_to_end) and
-        source. Add a new source by dropping a Source subclass in
-        src/wisdom_of_crowds/ingest/sources/ and a YAML config in
-        config/sources/, then triggering a run with source_slug=<slug>.
+        source. Every ingestion + aggregation run for every data source
+        lives under this one job. Add a new source by dropping a Source
+        subclass in src/wisdom_of_crowds/ingest/sources/ and a YAML config
+        in config/sources/, then triggering a run with source_slug=<slug>.
       tags:
         project: wisdom-of-crowds
-        owner:   yousufalabdullatif@gmail.com
+        component: pipeline
 
       parameters:
         - name:    phase
@@ -79,9 +84,9 @@ resources:
           default: ${var.sources_table}
 
       tasks:
-        - task_key: vox_populi
+        - task_key: run_pipeline
           notebook_task:
-            notebook_path: ./databricks_tasks/vox_populi_task.py
+            notebook_path: ./databricks_tasks/wisdom_of_crowds_task.py
             base_parameters:
               phase:         "{{job.parameters.phase}}"
               source_slug:   "{{job.parameters.source_slug}}"
